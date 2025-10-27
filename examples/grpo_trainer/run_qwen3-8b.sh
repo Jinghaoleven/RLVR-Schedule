@@ -3,7 +3,6 @@
 
 set -x
 PUB_DIR=/inspire/hdd/global_user/zhangjinghao-240108110057/models
-DATA_DIR=/inspire/hdd/project/longmemory/zhangjinghao-240108110057/dataset/LM_data/Verl_data
 OUTPUT_DIR=/inspire/hdd/project/longmemory/zhangjinghao-240108110057/running/LM/Qwen3-4B/RL
 project_name=verl_grpo_example_MATH-lighteval
 experiment_name=qwen3_4b_function_rm
@@ -15,8 +14,8 @@ export HYDRA_FULL_ERROR=1
 ray stop
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
-    data.train_files=$DATA_DIR/MATH-lighteval/train.parquet \
-    data.val_files=$DATA_DIR/MATH-lighteval/test.parquet \
+    data.train_files=dataset/train/MATH-lighteval/train.parquet \
+    data.val_files=dataset/train/MATH-lighteval/test.parquet \
     data.train_batch_size=1024 \
     data.max_prompt_length=1024 \
     data.max_response_length=4096 \
