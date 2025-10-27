@@ -775,3 +775,26 @@ def distributed_masked_mean(local_tensor, local_mask):
 
     global_mean = local_sum / local_num
     return global_mean
+
+def sample_zero_plus_trunc_exp(n, p_zero=0.7, lam=4.0, rng=None):
+    """
+    以概率 p_zero 严格取 0；否则从 (0,1] 的截断指数分布采样。
+    PDF(x | x>0) = lam * exp(-lam*x) / (1 - exp(-lam)),  0 < x <= 1
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    # 第一步：是否取 0（严格的点质量）
+    is_zero = rng.random(n) < p_zero
+    x = np.zeros(n, dtype=np.float64)
+
+    # 第二步：对非零的那部分，从截断指数分布逆变换采样
+    m = (~is_zero).sum()
+    if m > 0:
+        # 避免 u=0 带来精确 x=0：从 (eps, 1) 取值
+        eps = np.finfo(np.float64).eps
+        u = rng.uniform(low=eps, high=1.0, size=m)
+        # 截断指数的逆CDF：x = -ln(1 - u*(1 - e^{-lam})) / lam
+        x_nonzero = -np.log(1.0 - u * (1.0 - np.exp(-lam))) / lam
+        # 数值上可能非常接近 0，但严格 > 0
+        x[~is_zero] = x_nonzero
+    return x

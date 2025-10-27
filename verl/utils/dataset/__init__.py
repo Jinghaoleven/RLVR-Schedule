@@ -13,7 +13,8 @@
 # limitations under the License.
 
 from .rl_dataset import RLHFDataset
+from .rlpro_dataset import RLHFProDataset
 from .rm_dataset import RMDataset
 from .sft_dataset import SFTDataset
 
-__all__ = ["RLHFDataset", "RMDataset", "SFTDataset"]
+__all__ = ["RLHFDataset", "RLHFProDataset", "RMDataset", "SFTDataset"]

@@ -1016,6 +1016,8 @@ class RayPPOTrainer:
         next_step_profile = False
 
         for epoch in range(self.config.trainer.total_epochs):
+            if hasattr(self.train_dataset, "curriculum_config"):
+                self.train_dataset.curriculum_config.update({"epoch": epoch})
             for batch_dict in self.train_dataloader:
                 metrics = {}
                 timing_raw = {}

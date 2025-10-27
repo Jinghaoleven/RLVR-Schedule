@@ -17,6 +17,7 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 import os
 import socket
+import inspect
 
 import hydra
 import ray
@@ -253,7 +254,7 @@ class TaskRunner:
         # finally, we combine all the rewards together
         # The reward type depends on the tag of the data
         self.add_reward_model_worker(config)
-
+ 
         # Add a reference policy worker if KL loss or KL reward is used.
         self.add_ref_policy_worker(config, actor_rollout_cls)
 
@@ -317,6 +318,12 @@ class TaskRunner:
         trainer.fit()
 
 
+def build_dataset(dataset_cls, **kwargs):
+    sig = inspect.signature(dataset_cls)
+    accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return dataset_cls(**accepted)
+
+
 def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=True):
     """Create a dataset.
 
@@ -332,6 +339,7 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
     from torch.utils.data import Dataset
 
     from verl.utils.dataset.rl_dataset import RLHFDataset
+    from verl.utils.dataset.rlpro_dataset import RLHFProDataset
 
     # Check if a custom dataset class is specified in the data configuration
     # and if the path to the custom class is provided
@@ -350,18 +358,36 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
 
         dataset_cls = DynamicGenDataset
         print("Using DynamicGenDataset for data generation.")
+    elif data_config.trust_response is not None and is_train:
+        curriculum_config = None
+        if data_config.trust_response == "curriculum":
+            from multiprocessing import Manager
+
+            curriculum_config = Manager().dict()
+            curriculum_config.update({"epoch": 0})
+
+        dataset_cls = RLHFProDataset
     else:
         # Use the default RLHFDataset class if no custom class is specified
         dataset_cls = RLHFDataset
     print(f"Using dataset class: {dataset_cls.__name__}")
 
     # Instantiate the dataset using the determined dataset class
-    dataset = dataset_cls(
+    dataset = build_dataset(
+        dataset_cls,
         data_files=data_paths,
         tokenizer=tokenizer,
         processor=processor,
         config=data_config,
+        curriculum_config=curriculum_config if dataset_cls is RLHFProDataset else None,  # 若类不支持会自动忽略
     )
+    # dataset = dataset_cls(
+    #     data_files=data_paths,
+    #     tokenizer=tokenizer,
+    #     processor=processor,
+    #     config=data_config,
+    #     curriculum_config=curriculum_config,
+    # )
 
     return dataset
 

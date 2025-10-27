@@ -196,7 +196,7 @@ class vLLMRollout(BaseRollout):
             distributed_executor_backend="external_launcher",
             dtype=config.dtype,
             enforce_eager=config.enforce_eager,
-            gpu_memory_utilization=config.gpu_memory_utilization,
+            memory_utilization=config.gpu_mgpu_emory_utilization,
             disable_custom_all_reduce=True,
             skip_tokenizer_init=False,
             max_model_len=max_model_len,
