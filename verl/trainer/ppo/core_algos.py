@@ -1529,3 +1529,25 @@ def compute_pf_ppo_reweight_data(
     resampled_data.meta_info = resampled_meta_info
 
     return resampled_data
+
+def compute_sft_loss(input_ids, logits, loss_mask, vocab_size):
+    loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+    # Standard forward pass without sequence parallel
+    labels = input_ids[:, 1:].contiguous()
+
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels.contiguous()
+    # Flatten the tokens
+    shift_logits = shift_logits.view(-1, vocab_size)
+    shift_labels = shift_labels.view(-1)
+
+    if loss_mask is not None:
+        loss_mask = loss_mask[:, 1:].contiguous()
+        loss_mask = loss_mask.view(-1)
+
+    # Enable model parallelism
+    shift_labels = shift_labels.to(shift_logits.device)
+    loss = loss_fct(shift_logits, shift_labels)
+    # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+    loss = agg_loss(loss_mat=loss, loss_mask=loss_mask.to(loss.device), loss_agg_mode="token-mean")
+    return loss

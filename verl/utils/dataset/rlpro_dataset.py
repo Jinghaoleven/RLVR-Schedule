@@ -183,7 +183,7 @@ class RLHFProDataset(Dataset):
 
                 def doc2len(doc) -> int:
                     full_doc = copy.deepcopy(doc[prompt_key])
-                    full_doc.append({'content': '<think>\n'+doc["extra_info"][response_key]+'\n</think>', 'role': 'assistant'})
+                    # full_doc.append({'content': '<think>\n'+doc["extra_info"][response_key]+'\n</think>', 'role': 'assistant'})
                     return len(
                         tokenizer.apply_chat_template(
                             full_doc, add_generation_prompt=True, **self.apply_chat_template_kwargs
@@ -194,9 +194,15 @@ class RLHFProDataset(Dataset):
                 lambda doc: doc2len(doc) <= self.max_prompt_length,
                 num_proc=self.num_workers,
                 desc=f"Filtering prompts longer than {self.max_prompt_length} tokens",
+            ) 
+            print(f"filter dataset len1: {len(dataframe)}")
+            dataframe = dataframe.filter(
+                lambda doc: doc["extra_info"][response_key] is not None,
+                num_proc=self.num_workers,
+                desc=f"Filtering response none",
             )
 
-            print(f"filter dataset len: {len(dataframe)}")
+            print(f"filter dataset len2: {len(dataframe)}")
         return dataframe
 
     def resume_dataset_state(self):
@@ -211,7 +217,7 @@ class RLHFProDataset(Dataset):
     def __len__(self):
         return len(self.dataframe)
 
-    def _build_messages(self, example: dict, with_response: bool):
+    def _build_messages(self, example: dict, with_response: bool = False):
         messages: list = copy.deepcopy(example.get(self.prompt_key))
 
         if self.image_key in example or self.video_key in example:
@@ -232,18 +238,28 @@ class RLHFProDataset(Dataset):
             
             if with_response:
                 response = example["extra_info"][self.response_key]
-                messages.append({'content': [{"type": "text", "text": response}], 'role': 'assistant'})
+                messages.append({'content': [{"type": "text", "text": '<think>\n'+response+'\n</think>'}], 'role': 'assistant'})
         else:
             if with_response:
                 response = example["extra_info"][self.response_key]
-                messages.append({'content': '<think>\n'+response+'\n</think>', 'role': 'assistant'})
+                # For thinking-model
+                if "<think>" in response:
+                    messages.append({'content': response.replace("<think> ","<think>"), 'role': 'assistant'})
+                else:
+                    messages.append({'content': '<think>\n'+response+'\n</think>', 'role': 'assistant'})
+                # For instruct-model
+                # if "<think>" in response:
+                #     messages.append({'content': response.replace("<think> ","").replace("</think>",""), 'role': 'assistant'})
+                # else:
+                #     messages.append({'content': response, 'role': 'assistant'})
 
         return messages
     
     def _curriculum_params(self):
         # 每次读取 proxy，而不是在 __init__ 时复制到本地
         if self.response_mode == "curriculum":
-            epoch = self.curriculum_config.get("epoch")
+            # epoch = self.curriculum_config.get("epoch")
+            epoch = self.curriculum_config.get("step")
 
             def linear_ratio(epoch: int, max_response_ratio: float, max_curriculum_epoch: int) -> float:
                 """
@@ -280,6 +296,9 @@ class RLHFProDataset(Dataset):
             from verl.utils.dataset.vision_utils import process_image, process_video
 
             raw_prompt = self.processor.apply_chat_template(
+                prefix_messages, add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs
+            )
+            raw_prompt_response = self.tokenizer.apply_chat_template(
                 messages, add_generation_prompt=not with_response, tokenize=False, **self.apply_chat_template_kwargs
             )
             multi_modal_data = {}
@@ -302,10 +321,16 @@ class RLHFProDataset(Dataset):
                 # link: https://github.com/vllm-project/vllm/blob/3c545c0c3b98ee642373a308197d750d0e449403/vllm/multimodal/parse.py#L205
                 multi_modal_data["video"] = [video.numpy() for video in videos]
 
-            model_inputs = self.processor(text=[raw_prompt], images=images, videos=videos, return_tensors="pt")
+            model_inputs_prefix = self.processor(text=[raw_prompt], images=images, videos=videos, return_tensors="pt")
+            model_inputs = self.processor(text=[raw_prompt_response], images=images, videos=videos, return_tensors="pt")
 
-            input_ids = model_inputs.pop("input_ids")
-            attention_mask = model_inputs.pop("attention_mask")
+            prompt_length = model_inputs_prefix["input_ids"].size(1)
+            response_length = model_inputs["input_ids"].size(1) - model_inputs_prefix["input_ids"].size(1)
+            sample_length = prompt_length + round(response_length * progress_ratio)
+
+            input_ids = model_inputs.pop("input_ids")[:,:sample_length]
+            attention_mask = model_inputs.pop("attention_mask")[:,:sample_length]
+            prompt_attention_mask = model_inputs_prefix.pop("attention_mask")
 
             if "second_per_grid_ts" in model_inputs:
                 model_inputs.pop("second_per_grid_ts")
@@ -344,6 +369,18 @@ class RLHFProDataset(Dataset):
             
             input_ids = model_inputs.pop("input_ids")[:,:sample_length]
             attention_mask = model_inputs.pop("attention_mask")[:,:sample_length]
+            prompt_attention_mask = model_inputs_prefix.pop("attention_mask")
+
+        # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+
+        hint_mask = verl_F.get_hint_mask(
+            attention_mask,
+            prompt_attention_mask,
+            max_length=self.max_prompt_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=self.truncation,
+        )
 
         input_ids, attention_mask = verl_F.postprocess_data(
             input_ids=input_ids,
@@ -393,6 +430,7 @@ class RLHFProDataset(Dataset):
         row_dict["input_ids"] = input_ids[0]
         row_dict["attention_mask"] = attention_mask[0]
         row_dict["position_ids"] = position_ids[0]
+        row_dict["prompt_mask"] = hint_mask[0]
 
         raw_prompt_ids = self.tokenizer.encode(raw_prompt_response, add_special_tokens=False)[:sample_length]
 

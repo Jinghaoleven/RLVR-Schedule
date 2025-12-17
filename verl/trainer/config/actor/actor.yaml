@@ -74,6 +74,12 @@ loss_agg_mode: token-mean
 # Entropy regularization coefficient in PPO loss
 entropy_coeff: 0
 
+# Whether to use sft loss in RL.
+use_sft_loss: false
+
+# SFT loss coefficient when use_sft_loss is enabled
+sft_loss_coef: 0.1
+
 # Whether to use KL loss instead of KL reward penalty. True for GRPO
 use_kl_loss: false
 

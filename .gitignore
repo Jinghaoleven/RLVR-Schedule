@@ -14,6 +14,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 dataset/train*
+dataset/train-collect*
+result/*
 tensorflow/my_graph/*
 .idea/
 # C extensions

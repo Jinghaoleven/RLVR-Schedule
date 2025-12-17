@@ -1,20 +1,29 @@
-export CUDA_VISIBLE_DEVICES=1,2
+export CUDA_VISIBLE_DEVICES=0,1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-
-cd /inspire/hdd/global_user/zhangjinghao-240108110057/code/verl
-model_path=/inspire/hdd/global_user/zhangjinghao-240108110057/running/LM/Qwen3-4B/RL/verl_grpo_example_MATH-lighteval/qwen3_8b_function_rm/global_step_105/hf
-topp=0.95
-topk=20
-temperature=0.6
-max_response_length=38912
+# source /mnt/public/users/zhangjinghao/.lmvenv/bin/activate
+cd /mnt/public/users/zhangjinghao/code/verl
+model_path=/mnt/public/users/zhangjinghao/code/verl/result/LM/qwen3_4b_instruct/QuestA-25-sft/global_step_664_hf
+# topp=0.95
+# topk=20
+# temperature=0.6
+# max_response_length=38912
+# n=1
+topp=1
+topk=-1
+temperature=0.0
+max_response_length=32768
 n=1
-python evaluation/eval_vllm_suite.py \
+project_name=qwen3-4b-instruct
+experiment_name=SFT-QuestA-25 
+python evaluation/eval_vllm_suite3.py \
   --model $model_path \
   --n $n \
   --max_length $max_response_length \
   --p $topp \
   --k $topk \
   --t $temperature \
-  --experiment_name GRPO-base
+  --project_name $project_name \
+  --experiment_name $experiment_name \
 
-python evaluation/grade.py --file_dir evaluation/results/Base
+# python evaluation/grade.py --file_dir evaluation/results/$project_name/$experiment_name
+# python evaluation/grade.py --file_dir evaluation/results/$experiment_name

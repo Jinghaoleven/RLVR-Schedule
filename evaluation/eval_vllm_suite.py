@@ -17,6 +17,7 @@ import numpy as np
 
 import pandas as pd
 from tqdm import tqdm
+import vllm
 from vllm import LLM, SamplingParams
 import argparse
 
@@ -31,6 +32,7 @@ parser.add_argument("--p", type=float, default=1.0)
 parser.add_argument("--k", type=int, default=20)
 parser.add_argument("--n", type=int, default=32)          # roll-outs / prompt
 parser.add_argument("--max_length", type=int, default=90000)
+parser.add_argument("--project_name", type=str, default="qwen3-4b")
 parser.add_argument("--experiment_name", type=str, default="Polaris-4B")
 parser.add_argument("--output", type=str, default="evaluation/results")
 args = parser.parse_args()
@@ -38,6 +40,7 @@ args = parser.parse_args()
 # --------------------------------------------------------------------------- #
 #                   Original global constants / variables                     #
 # --------------------------------------------------------------------------- #
+PROJECT     = args.project_name
 NAME        = args.experiment_name
 N           = args.n                          # roll-outs per prompt
 MODEL_PATH  = args.model
@@ -121,12 +124,13 @@ def worker_process(args_tuple):
 
     llm = LLM(
         model=MODEL_PATH, 
-        tensor_parallel_size=2, 
+        tensor_parallel_size=1, 
         enforce_eager=False,
         dtype="bfloat16",
         max_model_len=MAX_TOKENS,
-        gpu_memory_utilization=0.9,
-        enable_prefix_caching=True)
+        gpu_memory_utilization=0.4,
+        enable_prefix_caching=True
+    )
 
     #     model = vllm.LLM(
     #     model_name,

@@ -380,7 +380,30 @@ def postprocess_data(
 
     return input_ids, attention_mask
 
-
+def get_hint_mask(
+    attention_mask: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
+    max_length: int,
+    pad_token_id: int,
+    left_pad=True,
+    truncation="error",
+):
+    prompt_attention_mask = pad_sequence_to_length(
+            prompt_attention_mask, max_seq_len=attention_mask.shape[-1], pad_token_id=0, left_pad=False
+        )
+    hint_mask = attention_mask - prompt_attention_mask
+    # print("attention_mask: ",attention_mask, "\n", "prompt_attention_mask: ", prompt_attention_mask, "\n", "hint_mask: ", hint_mask, "\n", "number: ", (hint_mask < 0).sum())
+    assert (hint_mask < 0).sum() == 0
+    _, hint_mask = postprocess_data(
+        input_ids=hint_mask,
+        attention_mask=hint_mask,
+        max_length=max_length,
+        pad_token_id=pad_token_id,
+        left_pad=left_pad,
+        truncation=truncation,
+    )
+    return hint_mask
+    
 def tokenize_and_postprocess_data(
     prompt: str, tokenizer: PreTrainedTokenizer, max_length: int, pad_token_id: int, left_pad=True, truncation="error"
 ):

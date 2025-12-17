@@ -128,7 +128,11 @@ class SFTDataset(Dataset):
         prompt_chat_str = tokenizer.apply_chat_template(
             prompt_chat, add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs
         )
-        response_chat_str = response + tokenizer.eos_token
+        # response_chat_str = response + tokenizer.eos_token
+        if "\n\n**Final Answer" in response:
+            response_chat_str = "<think>\n" + response[:response.find("\n\n**Final Answer")] + "\n</think>" + response[response.find("\n\n**Final Answer"):] + tokenizer.eos_token
+        else:
+            response_chat_str = "<think>\n\n</think>\n\n" + response + tokenizer.eos_token
 
         # tokenize
         prompt_ids_output = tokenizer(prompt_chat_str, return_tensors="pt", add_special_tokens=False)

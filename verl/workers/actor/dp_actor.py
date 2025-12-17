@@ -19,6 +19,7 @@ Single Process Actor
 
 import logging
 import os
+import copy
 
 import torch
 from torch import nn
@@ -27,7 +28,7 @@ from torch.distributed.tensor import DTensor
 
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
-from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty, compute_sft_loss
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
@@ -54,11 +55,12 @@ class DataParallelPPOActor(BasePPOActor):
         actor_optimizer (torch.optim.Optimizer, optional): Actor optimizer. Defaults to None.
     """
 
-    def __init__(self, config: ActorConfig, actor_module: nn.Module, actor_optimizer: torch.optim.Optimizer = None):
+    def __init__(self, config: ActorConfig, actor_module: nn.Module, actor_optimizer: torch.optim.Optimizer = None, model_config = None):
         """When optimizer is None, it is Reference Policy"""
         super().__init__(config)
         self.actor_module = actor_module
         self.actor_optimizer = actor_optimizer
+        self.model_config = model_config
         role = "Ref" if actor_optimizer is None else "Actor"
 
         self.use_remove_padding = self.config.get("use_remove_padding", False)
@@ -84,7 +86,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.device_name = get_device_name()
 
     def _forward_micro_batch(
-        self, micro_batch, temperature, calculate_entropy=False
+        self, micro_batch, temperature, calculate_entropy=False, calculate_logits=False
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
@@ -104,6 +106,7 @@ class DataParallelPPOActor(BasePPOActor):
             attention_mask = micro_batch["attention_mask"]
             position_ids = micro_batch["position_ids"]
             entropy = None
+            prompt_logits = None
             if position_ids.dim() == 3:  # qwen2vl mrope
                 position_ids = position_ids.transpose(0, 1)  # (bsz, 4, seqlen) -> (4, bsz, seqlen)
 
@@ -179,9 +182,10 @@ class DataParallelPPOActor(BasePPOActor):
                 if self.use_fused_kernels:
                     log_probs = output.log_probs.squeeze(0)  # (total_nnz,)
                     entropy_rmpad = output.entropy.squeeze(0)  # (total_nnz,)
-
                 else:
                     logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
+                    if calculate_logits:
+                        logits = logits_rmpad.clone()
                     logits_rmpad.div_(temperature)
 
                     # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
@@ -212,6 +216,13 @@ class DataParallelPPOActor(BasePPOActor):
                         unpad_dim=0,
                         padding_size=pad_size,
                     )
+                    if calculate_logits:
+                        logits = gather_outputs_and_unpad(
+                            logits,
+                            gather_dim=0,
+                            unpad_dim=0,
+                            padding_size=pad_size,
+                        )
                     if calculate_entropy:
                         entropy_rmpad = gather_outputs_and_unpad(
                             entropy_rmpad,
@@ -227,6 +238,13 @@ class DataParallelPPOActor(BasePPOActor):
                         batch=batch_size,
                         seqlen=seqlen,
                     )
+                if calculate_logits:
+                    full_logits = pad_input(
+                        hidden_states=logits.unsqueeze(-1),
+                        indices=indices,
+                        batch=batch_size,
+                        seqlen=seqlen,
+                    )
                 full_log_probs = pad_input(
                     hidden_states=log_probs.unsqueeze(-1),
                     indices=indices,
@@ -237,6 +255,8 @@ class DataParallelPPOActor(BasePPOActor):
                 # only return response part:
                 if calculate_entropy:
                     entropy = full_entropy.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
+                if calculate_logits:
+                    prompt_logits = full_logits.squeeze(-1)[:, :-response_length - 1]  # (bsz, prompt_length)
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
 
             else:  # not using rmpad and no ulysses sp
@@ -257,9 +277,13 @@ class DataParallelPPOActor(BasePPOActor):
                 if self.use_fused_kernels:
                     log_probs = output.log_probs[:, -response_length - 1 : -1]
                     entropy = output.entropy[:, -response_length - 1 : -1]  # (bsz, response_length)
+                    prompt_logits = output.logits[:, : -response_length - 1]   # (bsz, prompt_length)
 
                 else:
                     logits = output.logits
+                    if calculate_logits:
+                        prompt_logits = copy.deepcopy(logits)
+                        prompt_logits = prompt_logits[:, :-response_length - 1, :]  # (bsz, prompt_length, vocab_size)
 
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
@@ -270,7 +294,7 @@ class DataParallelPPOActor(BasePPOActor):
                         else:
                             entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
 
-            return entropy, log_probs
+            return entropy, log_probs, prompt_logits
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -294,7 +318,7 @@ class DataParallelPPOActor(BasePPOActor):
         return grad_norm
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
-    def compute_log_prob(self, data: DataProto, calculate_entropy=False) -> torch.Tensor:
+    def compute_log_prob(self, data: DataProto, calculate_entropy=False, calculate_logits=False) -> torch.Tensor:
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
 
         Args:
@@ -332,28 +356,36 @@ class DataParallelPPOActor(BasePPOActor):
 
         log_probs_lst = []
         entropy_lst = []
+        prompt_logits_lst = []
         for micro_batch in micro_batches:
             micro_batch = micro_batch.to(get_device_id())
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             with torch.no_grad():
-                entropy, log_probs = self._forward_micro_batch(
-                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
+                entropy, log_probs, prompt_logits = self._forward_micro_batch(
+                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, calculate_logits=calculate_logits
                 )
             log_probs_lst.append(log_probs)
             if calculate_entropy:
                 entropy_lst.append(entropy)
+            if calculate_logits:
+                prompt_logits_lst.append(prompt_logits)
 
         log_probs = torch.concat(log_probs_lst, dim=0)
         entropys = None
+        prompt_logits = None
         if calculate_entropy:
             entropys = torch.concat(entropy_lst, dim=0)
+        if calculate_logits:
+            prompt_logits = torch.concat(prompt_logits_lst, dim=0)
 
         if use_dynamic_bsz:
             log_probs = restore_dynamic_batch(log_probs, batch_idx_list)
             if calculate_entropy:
                 entropys = restore_dynamic_batch(entropys, batch_idx_list)
+            if calculate_logits:
+                prompt_logits = restore_dynamic_batch(prompt_logits, batch_idx_list)
 
-        return log_probs, entropys
+        return log_probs, entropys, prompt_logits
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
@@ -373,6 +405,8 @@ class DataParallelPPOActor(BasePPOActor):
         ]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
+        if self.config.use_sft_loss:
+            select_keys.append("prompt_mask")
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
         if "rollout_is_weights" in data.batch.keys():
@@ -420,11 +454,10 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_scale_factor = 1 / self.gradient_accumulation
 
                     # all return: (bsz, response_length)
-                    calculate_entropy = False
-                    if entropy_coeff != 0:
-                        calculate_entropy = True
-                    entropy, log_prob = self._forward_micro_batch(
-                        model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
+                    calculate_entropy = True if entropy_coeff != 0 else False
+                    calculate_logits = True if self.config.use_sft_loss else False
+                    entropy, log_prob, prompt_logits = self._forward_micro_batch(
+                        model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, calculate_logits=calculate_logits
                     )
 
                     if on_policy:
@@ -478,6 +511,13 @@ class DataParallelPPOActor(BasePPOActor):
                         policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                         micro_batch_metrics["actor/kl_loss"] = kl_loss.detach().item() * loss_scale_factor
                         micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
+                    
+                    if self.config.use_sft_loss:
+                        response_length = model_inputs["responses"].size(-1)
+                        sft_loss = compute_sft_loss(model_inputs["input_ids"][:, :-response_length - 1], prompt_logits, loss_mask=model_inputs["prompt_mask"][:, :-1], vocab_size = self.model_config.vocab_size)
+                        loss = policy_loss + sft_loss * self.config.sft_loss_coef
+                        micro_batch_metrics["actor/sft_loss"] = sft_loss.detach().item() * loss_scale_factor
+                        micro_batch_metrics["actor/sft_coef"] = self.config.sft_loss_coef
 
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz

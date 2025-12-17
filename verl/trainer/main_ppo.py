@@ -364,7 +364,7 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
             from multiprocessing import Manager
 
             curriculum_config = Manager().dict()
-            curriculum_config.update({"epoch": 0})
+            curriculum_config.update({"epoch": 0, "step":0})
 
         dataset_cls = RLHFProDataset
     else:
