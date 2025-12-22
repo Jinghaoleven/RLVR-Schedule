@@ -65,6 +65,25 @@ def collate_fn(data_list: list[dict]) -> dict:
 
     return {**tensors, **non_tensors}
 
+def get_valid_response(example, response_key, is_random: bool = False):
+    all_solutions = example["extra_info"][response_key]
+    verification = example["extra_info"].get("verification", None)
+    if len(example["extra_info"][response_key]) > 1:
+        valid_idx = []
+        if verification is None:
+            ind = 0
+        else:
+            for idx, ver in enumerate(verification):
+                if ver == 1:
+                    valid_idx.append(idx)
+            if is_random:
+                ind = np.random.choice(valid_idx)
+            else:
+                ind = valid_idx[0]
+        return example["extra_info"][response_key][ind]
+    else:
+        return example["extra_info"][response_key]
+
 
 class RLHFProDataset(Dataset):
     """
@@ -237,11 +256,12 @@ class RLHFProDataset(Dataset):
                 message["content"] = content_list
             
             if with_response:
-                response = example["extra_info"][self.response_key]
+                response = get_valid_response(example, self.response_key, is_random=True)
                 messages.append({'content': [{"type": "text", "text": '<think>\n'+response+'\n</think>'}], 'role': 'assistant'})
         else:
             if with_response:
-                response = example["extra_info"][self.response_key]
+                # response = example["extra_info"][self.response_key]
+                response = get_valid_response(example, self.response_key, is_random=True)
                 # For thinking-model
                 if "<think>" in response:
                     messages.append({'content': response.replace("<think> ","<think>"), 'role': 'assistant'})

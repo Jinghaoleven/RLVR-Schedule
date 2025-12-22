@@ -44,7 +44,7 @@ def default_compute_score(
         from . import gsm8k
 
         res = gsm8k.compute_score(solution_str, ground_truth)
-    elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval", "HuggingFaceH4/MATH-500", "aime24", "GAIR/LIMO-v2", "foreverlasting1202/QuestA", "zwhe99/DeepMath-103K", "agentica-org/DeepScaleR-Preview-Dataset", "ChaoHuangCS/DRIFT-TL-Distill-4K", "AI4Math/MathVista"]:
+    elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval", "XCombined", "HuggingFaceH4/MATH-500", "aime24", "GAIR/LIMO-v2", "foreverlasting1202/QuestA", "zwhe99/DeepMath-103K", "agentica-org/DeepScaleR-Preview-Dataset", "ChaoHuangCS/DRIFT-TL-Distill-4K", "AI4Math/MathVista"]:
         from . import math_reward
 
         res = math_reward.compute_score(solution_str, ground_truth)
