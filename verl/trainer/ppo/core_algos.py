@@ -27,6 +27,8 @@ from typing import Any, Callable, Optional
 import numpy as np
 import torch
 from omegaconf import DictConfig
+import torch.nn.functional as F
+import math
 
 import verl.utils.torch_functional as verl_F
 from verl.trainer.config import AlgoConfig
@@ -1530,7 +1532,33 @@ def compute_pf_ppo_reweight_data(
 
     return resampled_data
 
-def compute_sft_loss(input_ids, logits, loss_mask, vocab_size):
+# def compute_sft_loss(input_ids, logits, use_sp, mode, loss_mask, vocab_size, response_length=None):
+#     if mode == "vanilla":
+#         if not use_sp:
+#             loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+#             # Standard forward pass without sequence parallel
+#             labels = input_ids[:, 1:].contiguous()
+
+#             shift_logits = logits[..., :-1, :].contiguous()
+#             shift_labels = labels.contiguous()
+#             # Flatten the tokens
+#             shift_logits = shift_logits.view(-1, vocab_size)
+#             shift_labels = shift_labels.view(-1)
+
+#             if loss_mask is not None:
+#                 loss_mask = loss_mask[:, 1:].contiguous()
+#                 loss_mask = loss_mask.view(-1)
+
+#             # Enable model parallelism
+#             shift_labels = shift_labels.to(shift_logits.device)
+#             loss = loss_fct(shift_logits, shift_labels)
+#             # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+#             loss = agg_loss(loss_mat=loss, loss_mask=loss_mask.to(loss.device), loss_agg_mode="token-mean")
+#         else:
+#             loss = loss_fct(logits, input_ids)
+        
+#     return loss
+def compute_sft_loss(input_ids, logits, loss_mask, vocab_size, mode, kl_estimator):
     loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
     # Standard forward pass without sequence parallel
     labels = input_ids[:, 1:].contiguous()
@@ -1541,13 +1569,76 @@ def compute_sft_loss(input_ids, logits, loss_mask, vocab_size):
     shift_logits = shift_logits.view(-1, vocab_size)
     shift_labels = shift_labels.view(-1)
 
+    # if mode == "trapo":
+    #     shift_logits = shift_logits.clamp(min=-0.1,max=0.1)
+
     if loss_mask is not None:
         loss_mask = loss_mask[:, 1:].contiguous()
         loss_mask = loss_mask.view(-1)
 
     # Enable model parallelism
     shift_labels = shift_labels.to(shift_logits.device)
-    loss = loss_fct(shift_logits, shift_labels)
-    # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+
+    if mode == "vanilla":
+        loss = loss_fct(shift_logits, shift_labels)
+    elif mode == "dft":
+        # target_probs = torch.softmax(shift_logits, dim=-1)
+        # log_probs = F.log_softmax(shift_logits, dim=-1)  # [B*T, V]
+        # target_log_probs = log_probs.gather(dim=-1, index=shift_labels.unsqueeze(-1)).squeeze(-1)  # [B*T]
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        target_probs = target_log_probs.exp()  # [B*T]
+        # prob_coefficients = target_probs.gather(1, shift_labels.unsqueeze(-1)).squeeze(-1)
+        # loss = loss * target_probs.detach()
+        loss = -target_log_probs * target_probs.detach()
+
+    elif mode == "trapo":
+        # log_probs = F.log_softmax(shift_logits, dim=-1)  # [B*T, V]
+        # target_log_probs = log_probs.gather(dim=-1, index=shift_labels.unsqueeze(-1)).squeeze(-1)  # [B*T]
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        target_probs = target_log_probs.exp()  # [B*T]
+
+        # piecewise loss L_alpha(p)
+        alpha_t = torch.tensor(0.1, device=shift_logits.device, dtype=target_probs.dtype)
+        # constants for continuity at p=alpha
+        const = -math.log(0.1) + 1.0
+
+        loss = torch.where(
+            target_probs >= alpha_t,
+            -target_log_probs,                          # -log p
+            -(target_probs / alpha_t) + const          # -p/alpha - log alpha + 1
+        )
+    elif mode == "forward_kl":
+        # log_probs = F.log_softmax(shift_logits, dim=-1)  # [B*T, V]
+        # target_log_probs = log_probs.gather(dim=-1, index=shift_labels.unsqueeze(-1)).squeeze(-1)  # [B*T]
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        # NEG_INF = torch.finfo(log_probs.dtype).min
+        # ref_log_prob = torch.full((target_log_probs.size(0),), NEG_INF, device=log_probs.device, dtype=log_probs.dtype)
+        # ref_log_prob.scatter_(dim=0, index=shift_labels.unsqueeze(-1), value=0.0)   # log(1) = 0
+        ref_log_prob = torch.zeros_like(target_log_probs)
+        loss = kl_penalty(
+            logprob=ref_log_prob, ref_logprob=target_log_probs, kl_penalty=kl_estimator
+        )   
+    elif mode == "reverse_kl":
+        # log_probs = F.log_softmax(shift_logits, dim=-1)  # [B*T, V]
+        # target_log_probs = log_probs.gather(dim=-1, index=shift_labels.unsqueeze(-1)).squeeze(-1)  # [B*T]
+
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        # NEG_INF = torch.finfo(log_probs.dtype).min
+        # ref_log_prob = torch.full((log_probs.size(0), log_probs.size(1)), NEG_INF, device=log_probs.device, dtype=log_probs.dtype)
+        # ref_log_prob.scatter_(dim=-1, index=shift_labels.unsqueeze(-1), value=0.0)   # log(1) = 0
+        ref_log_prob = torch.zeros_like(target_log_probs)
+        loss = kl_penalty(
+            logprob=target_log_probs, ref_logprob=ref_log_prob, kl_penalty=kl_estimator
+        )
+    
     loss = agg_loss(loss_mat=loss, loss_mask=loss_mask.to(loss.device), loss_agg_mode="token-mean")
+    # loss = loss * loss_mask.to(loss.device)
+
+    # valid_token_this_rank = torch.sum(loss_mask)
+    # dp_size = 1
+    # loss = torch.sum(loss) / (valid_token_this_rank + 1e-8) * dp_size
+
+    # print("agg loss:", aloss.item(), "sft loss:", loss.item())
+    # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+
     return loss

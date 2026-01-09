@@ -31,6 +31,7 @@ from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
 from verl.utils.device import is_cuda_available
 from verl.utils.import_utils import load_extern_type
+from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -292,8 +293,8 @@ class TaskRunner:
         from verl.utils.dataset.rl_dataset import collate_fn
 
         # Create training and validation datasets.
-        train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor, is_train=True)
-        val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor, is_train=False)
+        train_dataset = create_rl_dataset(config.data.train_files, config.data, config.trainer.default_local_dir, tokenizer, processor, is_train=True)
+        val_dataset = create_rl_dataset(config.data.val_files, config.data, config.trainer.default_local_dir, tokenizer, processor, is_train=False)
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         # Initialize the PPO trainer.
@@ -308,7 +309,7 @@ class TaskRunner:
             val_reward_fn=val_reward_fn,
             train_dataset=train_dataset,
             val_dataset=val_dataset,
-            collate_fn=collate_fn,
+            # collate_fn=collate_fn,
             train_sampler=train_sampler,
         )
         # Initialize the workers of the trainer.
@@ -324,7 +325,7 @@ def build_dataset(dataset_cls, **kwargs):
     return dataset_cls(**accepted)
 
 
-def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=True):
+def create_rl_dataset(data_paths, data_config, default_local_dir, tokenizer, processor, is_train=True):
     """Create a dataset.
 
     Arguments:
@@ -361,10 +362,21 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
     elif data_config.trust_response is not None and is_train:
         curriculum_config = None
         if data_config.trust_response == "curriculum":
+
+            checkpoint_folder = default_local_dir  # TODO: check path
+            if not os.path.isabs(checkpoint_folder):
+                working_dir = os.getcwd()
+                checkpoint_folder = os.path.join(working_dir, checkpoint_folder)
+            global_step_folder = find_latest_ckpt_path(checkpoint_folder)  # None if no latest
+            if global_step_folder is None:
+                global_steps = 0
+            else:
+                global_steps = int(global_step_folder.split("global_step_")[-1])
+
             from multiprocessing import Manager
 
             curriculum_config = Manager().dict()
-            curriculum_config.update({"epoch": 0, "step":0})
+            curriculum_config.update({"epoch": 0, "step":global_steps})
 
         dataset_cls = RLHFProDataset
     else:

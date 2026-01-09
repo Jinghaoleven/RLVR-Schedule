@@ -35,7 +35,19 @@ from verl.utils.model import compute_position_id_with_mask
 logger = logging.getLogger(__name__)
 
 
-def collate_fn(data_list: list[dict]) -> dict:
+def collate_process(key, val, target_length, pad_token_id):
+    if val.size(0) == target_length:
+        return val
+    if key == "input_ids":
+        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=pad_token_id, left_pad=True)
+    elif key == "attention_mask":
+        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=0, left_pad=True)
+    elif key == "position_ids":
+        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=0, left_pad=True)
+    elif key == "prompt_mask":
+        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=0, left_pad=True)
+
+def collate_fn(data_list: list[dict], pad_token_id: int) -> dict:
     """
     Collate a batch of sample dicts into batched tensors and arrays.
 
@@ -49,20 +61,48 @@ def collate_fn(data_list: list[dict]) -> dict:
     """
     tensors = defaultdict(list)
     non_tensors = defaultdict(list)
-
+    
+    target_length = max(data["input_ids"].shape[0] for data in data_list)
     for data in data_list:
         for key, val in data.items():
             if isinstance(val, torch.Tensor):
-                tensors[key].append(val)
+                # tensors[key].append(val[:target_length])
+                tensors[key].append(collate_process(key, val, target_length, pad_token_id))
             else:
                 non_tensors[key].append(val)
 
+    tensors["input_ids"][0]
+    # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
     for key, val in tensors.items():
+        # try:
         tensors[key] = torch.stack(val, dim=0)
+        # except:
+        #     print(f"Cannot stack tensors for key: {key}, using default collate instead.")
+        #     # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+        #     tensors[key] = torch.utils.data._utils.collate.default_collate(val)
+        #     print(f"After default collate, shape is {tensors[key].shape}.")
+    # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
 
     for key, val in non_tensors.items():
         non_tensors[key] = np.fromiter(val, dtype=object, count=len(val))
 
+    # print("[CollatePro]", pad_token_id, tensors["input_ids"].shape, tensors["position_ids"].shape, min([len(ele) for ele in non_tensors["raw_prompt_ids"]]))
+    # def first_valid_pos_is_one(attention_mask, position_ids):
+    #     """
+    #     attention_mask: Long/Bool Tensor [B, seq_len]
+    #     position_ids:   Long Tensor      [B, seq_len]
+    #     return: Bool Tensor [B]
+    #     """
+    #     first_valid_idx = attention_mask.long().argmax(dim=-1)  # [B]
+    #     first_pos_id = position_ids.gather(
+    #         dim=1,
+    #         index=first_valid_idx.unsqueeze(1)
+    #     ).squeeze(1)
+    #     return first_pos_id == 1
+    # if first_valid_pos_is_one(tensors["attention_mask"],tensors["position_ids"]).sum() > 0:
+    #     print("[first_valid_pos_is_one]:", first_valid_pos_is_one(tensors["attention_mask"],tensors["position_ids"]))
+    #     from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+    
     return {**tensors, **non_tensors}
 
 def get_valid_response(example, response_key, is_random: bool = False):
@@ -127,6 +167,7 @@ class RLHFProDataset(Dataset):
         self.video_key = config.get("video_key", "videos")
         self.max_prompt_length = config.get("max_prompt_length", 1024)
         self.max_response_length = config.get("max_response_length", 1024)
+        self.step_prompt_length = self.max_prompt_length
         self.return_raw_chat = config.get("return_raw_chat", False)
         self.return_full_prompt = config.get("return_full_prompt", False)
         self.truncation = config.get("truncation", "error")
@@ -210,7 +251,7 @@ class RLHFProDataset(Dataset):
                     )
 
             dataframe = dataframe.filter(
-                lambda doc: doc2len(doc) <= self.max_prompt_length,
+                lambda doc: doc2len(doc) <= self.max_prompt_length and doc2len(doc) > 0,
                 num_proc=self.num_workers,
                 desc=f"Filtering prompts longer than {self.max_prompt_length} tokens",
             ) 
@@ -291,6 +332,8 @@ class RLHFProDataset(Dataset):
                 return max_response_ratio - max_response_ratio * (min(epoch / max_curriculum_epoch, 1))
 
             progress_ratio = linear_ratio(epoch, self.max_response_ratio, self.max_curriculum_epoch)
+            self.step_prompt_length = round(self.max_prompt_length + self.max_response_length * progress_ratio)
+            # print(f"curriculum epoch: {epoch}, progress_ratio: {progress_ratio}, step_prompt_length: {self.step_prompt_length}")
         elif self.response_mode == "batch_random":
             progress_ratio = verl_F.sample_zero_plus_trunc_exp(1, p_zero=0.7, lam=4.0)
         elif self.response_mode == "batch_curriculum":
@@ -305,7 +348,7 @@ class RLHFProDataset(Dataset):
         """
         progress_ratio = self._curriculum_params()
         row_dict: dict = self.dataframe[item]
-        # logger.warning(f"progress_ratio{progress_ratio}")
+        # logger.warning(f"progress_ratio{progress_ratio}, {self.step_prompt_length}")
         
         with_response = progress_ratio > 0
         prefix_messages = self._build_messages(row_dict, with_response=False)
@@ -391,12 +434,10 @@ class RLHFProDataset(Dataset):
             attention_mask = model_inputs.pop("attention_mask")[:,:sample_length]
             prompt_attention_mask = model_inputs_prefix.pop("attention_mask")
 
-        # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
-
         hint_mask = verl_F.get_hint_mask(
             attention_mask,
             prompt_attention_mask,
-            max_length=self.max_prompt_length,
+            max_length=self.step_prompt_length,
             pad_token_id=self.tokenizer.pad_token_id,
             left_pad=True,
             truncation=self.truncation,
@@ -405,12 +446,12 @@ class RLHFProDataset(Dataset):
         input_ids, attention_mask = verl_F.postprocess_data(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            max_length=self.max_prompt_length,
+            max_length=self.step_prompt_length,
             pad_token_id=self.tokenizer.pad_token_id,
             left_pad=True,
             truncation=self.truncation,
         )
-
+        # logger.warning(f"progress_ratio{progress_ratio}, {self.step_prompt_length},{input_ids.shape}")
         if self.processor is not None and "Qwen2VLImageProcessor" in self.processor.image_processor.__class__.__name__:
             # qwen-vl mrope
             if "Qwen3VLProcessor" in self.processor.__class__.__name__:
@@ -454,17 +495,17 @@ class RLHFProDataset(Dataset):
 
         raw_prompt_ids = self.tokenizer.encode(raw_prompt_response, add_special_tokens=False)[:sample_length]
 
-        if len(raw_prompt_ids) > self.max_prompt_length:
+        if len(raw_prompt_ids) > self.step_prompt_length:
             if self.truncation == "left":
-                raw_prompt_ids = raw_prompt_ids[-self.max_prompt_length:]
+                raw_prompt_ids = raw_prompt_ids[-self.step_prompt_length:]
             elif self.truncation == "right":
-                raw_prompt_ids = raw_prompt_ids[:self.max_prompt_length]
+                raw_prompt_ids = raw_prompt_ids[:self.step_prompt_length]
             elif self.truncation == "middle":
-                left_half = self.max_prompt_length // 2
-                right_half = self.max_prompt_length - left_half
+                left_half = self.step_prompt_length // 2
+                right_half = self.step_prompt_length - left_half
                 raw_prompt_ids = raw_prompt_ids[:left_half] + raw_prompt_ids[-right_half:]
             elif self.truncation == "error":
-                raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.max_prompt_length}.")
+                raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.step_prompt_length}.")
 
         row_dict["raw_prompt_ids"] = raw_prompt_ids
         # logger.warning(f"progress_ratio{self.tokenizer.decode(raw_prompt_ids, add_special_tokens=False)}")

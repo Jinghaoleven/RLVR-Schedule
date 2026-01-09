@@ -14,16 +14,17 @@ temperature=0.0
 max_response_length=32768
 n=1
 project_name=qwen3-4b-instruct
-experiment_name=SFT-QuestA-25 
-python evaluation/eval_vllm_suite3.py \
-  --model $model_path \
-  --n $n \
-  --max_length $max_response_length \
-  --p $topp \
-  --k $topk \
-  --t $temperature \
-  --project_name $project_name \
-  --experiment_name $experiment_name \
+# experiment_name=SFT-QuestA-25 
+experiment_name=GRPO-Pro-wSFT-QuestA-25 
+# python evaluation/eval_vllm_suite3.py \
+#   --model $model_path \
+#   --n $n \
+#   --max_length $max_response_length \
+#   --p $topp \
+#   --k $topk \
+#   --t $temperature \
+#   --project_name $project_name \
+#   --experiment_name $experiment_name \
 
-# python evaluation/grade.py --file_dir evaluation/results/$project_name/$experiment_name
+python evaluation/grade.py --file_dir evaluation/results/$project_name/$experiment_name
 # python evaluation/grade.py --file_dir evaluation/results/$experiment_name

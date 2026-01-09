@@ -114,6 +114,28 @@ class DataParallelPPOActor(BasePPOActor):
                 input_ids_rmpad, indices, cu_seqlens, *_ = unpad_input(
                     input_ids.unsqueeze(-1), attention_mask
                 )  # input_ids_rmpad (total_nnz, ...)
+                # if bool(position_ids[0,[indices[0]]] > 0):
+                #     shift = position_ids[0,[indices[0]]]
+                #     input_ids = torch.cat(
+                #         [
+                #             input_ids[:, :indices[0]],
+                #             torch.full((input_ids.shape[0], shift), 151644, dtype=input_ids.dtype, device=input_ids.device),
+                #             input_ids[:, indices[0]:],
+                #         ],
+                #         dim=1
+                #     )
+                #     attention_mask = torch.cat(
+                #         [
+                #             attention_mask[:, :indices[0]],
+                #             torch.ones((attention_mask.shape[0],shift),dtype=attention_mask.dtype, device=attention_mask.device),
+                #             attention_mask[:, indices[0]:],
+                #         ],
+                #         dim=1
+                #     )
+                #     input_ids_rmpad, indices, cu_seqlens, *_ = unpad_input(
+                #         input_ids.unsqueeze(-1), attention_mask
+                #     ) 
+
                 input_ids_rmpad = input_ids_rmpad.transpose(0, 1)  # (1, total_nnz)
 
                 # unpad the position_ids to align the rotary
@@ -134,9 +156,16 @@ class DataParallelPPOActor(BasePPOActor):
                     multi_modal_inputs = process_multi_modal_inputs_for_minicpmo(
                         input_ids, attention_mask, position_ids, cu_seqlens, multi_modal_inputs
                     )
-
                 # for compute the log_prob
                 input_ids_rmpad_rolled = torch.roll(input_ids_rmpad, shifts=-1, dims=1)  # (1, total_nnz)
+
+                # indices_q = (position_ids_rmpad.view(-1) == 0).nonzero().view(-1)
+                # if input_ids.shape[0] == 2:
+                #     print("[Actor-Yes]:", position_ids_rmpad, indices_q, torch.max(position_ids_rmpad), torch.min(position_ids_rmpad))
+                #     from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+                # if len(indices_q)==0:
+                #     print("[Actor]:", position_ids_rmpad, indices_q, torch.max(position_ids_rmpad), torch.min(position_ids_rmpad))
+                #     from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
 
                 # pad and slice the inputs if sp > 1
                 if self.use_ulysses_sp:
@@ -156,6 +185,7 @@ class DataParallelPPOActor(BasePPOActor):
                             position_ids_rmpad=position_ids_rmpad,
                             sp_size=self.ulysses_sequence_parallel_size,
                         )
+
                     input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(
                         input_ids_rmpad_rolled,
                         position_ids_rmpad=None,
@@ -282,7 +312,7 @@ class DataParallelPPOActor(BasePPOActor):
                 else:
                     logits = output.logits
                     if calculate_logits:
-                        prompt_logits = copy.deepcopy(logits)
+                        prompt_logits = logits.clone()
                         prompt_logits = prompt_logits[:, :-response_length - 1, :]  # (bsz, prompt_length, vocab_size)
 
                     logits.div_(temperature)
@@ -356,36 +386,36 @@ class DataParallelPPOActor(BasePPOActor):
 
         log_probs_lst = []
         entropy_lst = []
-        prompt_logits_lst = []
+        # prompt_logits_lst = []
         for micro_batch in micro_batches:
             micro_batch = micro_batch.to(get_device_id())
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             with torch.no_grad():
-                entropy, log_probs, prompt_logits = self._forward_micro_batch(
-                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, calculate_logits=calculate_logits
+                entropy, log_probs, _ = self._forward_micro_batch(
+                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, calculate_logits=False
                 )
             log_probs_lst.append(log_probs)
             if calculate_entropy:
                 entropy_lst.append(entropy)
-            if calculate_logits:
-                prompt_logits_lst.append(prompt_logits)
+            # if calculate_logits:
+            #     prompt_logits_lst.append(prompt_logits)
 
         log_probs = torch.concat(log_probs_lst, dim=0)
         entropys = None
-        prompt_logits = None
+        # prompt_logits = None
         if calculate_entropy:
             entropys = torch.concat(entropy_lst, dim=0)
-        if calculate_logits:
-            prompt_logits = torch.concat(prompt_logits_lst, dim=0)
+        # if calculate_logits:
+        #     prompt_logits = torch.concat(prompt_logits_lst, dim=0)
 
         if use_dynamic_bsz:
             log_probs = restore_dynamic_batch(log_probs, batch_idx_list)
             if calculate_entropy:
                 entropys = restore_dynamic_batch(entropys, batch_idx_list)
-            if calculate_logits:
-                prompt_logits = restore_dynamic_batch(prompt_logits, batch_idx_list)
+            # if calculate_logits:
+            #     prompt_logits = restore_dynamic_batch(prompt_logits, batch_idx_list)
 
-        return log_probs, entropys, prompt_logits
+        return log_probs, entropys#, prompt_logits
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
@@ -453,7 +483,6 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         loss_scale_factor = 1 / self.gradient_accumulation
 
-                    # all return: (bsz, response_length)
                     calculate_entropy = True if entropy_coeff != 0 else False
                     calculate_logits = True if self.config.use_sft_loss else False
                     entropy, log_prob, prompt_logits = self._forward_micro_batch(
@@ -514,8 +543,8 @@ class DataParallelPPOActor(BasePPOActor):
                     
                     if self.config.use_sft_loss:
                         response_length = model_inputs["responses"].size(-1)
-                        sft_loss = compute_sft_loss(model_inputs["input_ids"][:, :-response_length - 1], prompt_logits, loss_mask=model_inputs["prompt_mask"][:, :-1], vocab_size = self.model_config.vocab_size)
-                        loss = policy_loss + sft_loss * self.config.sft_loss_coef
+                        sft_loss = compute_sft_loss(model_inputs["input_ids"][:, :-response_length - 1], prompt_logits, loss_mask=model_inputs["prompt_mask"][:, :-1], vocab_size = self.model_config.vocab_size, mode=self.config.sft_mode, kl_estimator=self.config.kl_loss_type)
+                        policy_loss = policy_loss + sft_loss * self.config.sft_loss_coef
                         micro_batch_metrics["actor/sft_loss"] = sft_loss.detach().item() * loss_scale_factor
                         micro_batch_metrics["actor/sft_coef"] = self.config.sft_loss_coef
 

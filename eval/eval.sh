@@ -36,12 +36,14 @@ export VLLM_DISABLE_DEEP_GEMM=1
 # $ROOT_DIR/running/LM/Qwen2.5-Math-1.5B/RL/Qwen2.5-Math-1.5B-math_lvl3to5_8k/GRPO-tkprefix-rp-allnorm-seq01-.8tar-.01coef-.6clip-15topk-cdetach-mtrain-bc.0-4lr/ckpt/global_step200_hf
 
 # source /mnt/public/users/zhangjinghao/.verl-venv/bin/activate
+# source /mnt/public/users/zhangjinghao/.lmvenv/bin/activate
 # source /mnt/public/users/zhangjinghao/code/project/RLFR/.rlfrvenv/bin/activate
 python eval/evaluate_model.py \
---model_name /mnt/public/users/zhangjinghao/code/verl/result/LM/qwen3_4b_instruct/QuestA-25-pro-wsft1.0-grpo/global_step_123/hf \
+--model_name /mnt/public/users/zhangjinghao/models/Qwen3-4B \
 --dataset_name dataset/evaluation_suite \
 --temperature 0 \
---max_tokens 24576 \
+--top_p 0.95 \
+--max_tokens 40960 \
 --template qwen_math_box \
 --n_samples 1 \
 --eval_type pass@k 

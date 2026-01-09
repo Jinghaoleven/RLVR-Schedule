@@ -114,14 +114,21 @@ def _unpad_tensor(x: Tensor, dim: int, padding_size: int) -> Tensor:
     return x[tuple(slc)]
 
 
-def slice_input_tensor(x: Tensor, dim: int, padding: bool = True, group: ProcessGroup = None) -> Tensor:
+def slice_input_tensor(
+    x: Tensor, dim: int, padding: bool = True, group: ProcessGroup = None, min_chunk_size: int = 0
+) -> Tensor:
     group = get_ulysses_sequence_parallel_group() if group is None else group
     sp_world_size = dist.get_world_size(group)
     sp_rank = get_ulysses_sequence_parallel_rank()
     dim_size = x.size(dim)
     # pad before slice
-    if padding and dim_size % sp_world_size:
-        padding_size = sp_world_size - (dim_size % sp_world_size)
+    target_size = dim_size
+    if min_chunk_size > 0:
+        target_size = max(target_size, sp_world_size * min_chunk_size)
+    if padding and target_size % sp_world_size:
+        target_size += sp_world_size - (target_size % sp_world_size)
+    padding_size = target_size - dim_size
+    if padding_size > 0:
         x = _pad_tensor(x, dim, padding_size)
     # slice the input tensor
     parts = x.size(dim) // sp_world_size
@@ -129,6 +136,21 @@ def slice_input_tensor(x: Tensor, dim: int, padding: bool = True, group: Process
     slc[dim] = slice(sp_rank * parts, (sp_rank + 1) * parts)
     return x[tuple(slc)].contiguous()
 
+
+# def slice_input_tensor(x: Tensor, dim: int, padding: bool = True, group: ProcessGroup = None) -> Tensor:
+#     group = get_ulysses_sequence_parallel_group() if group is None else group
+#     sp_world_size = dist.get_world_size(group)
+#     sp_rank = get_ulysses_sequence_parallel_rank()
+#     dim_size = x.size(dim)
+#     # pad before slice
+#     if padding and dim_size % sp_world_size:
+#         padding_size = sp_world_size - (dim_size % sp_world_size)
+#         x = _pad_tensor(x, dim, padding_size)
+#     # slice the input tensor
+#     parts = x.size(dim) // sp_world_size
+#     slc = [slice(None)] * len(x.shape)
+#     slc[dim] = slice(sp_rank * parts, (sp_rank + 1) * parts)
+#     return x[tuple(slc)].contiguous()
 
 def all_to_all_tensor(
     local_input: Tensor,
@@ -315,9 +337,9 @@ def ulysses_pad_and_slice_inputs(
         int: pad size
     """
     input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad(input_ids_rmpad, position_ids_rmpad, sp_size)
-    input_ids_rmpad = slice_input_tensor(input_ids_rmpad, dim=1, padding=False)
+    input_ids_rmpad = slice_input_tensor(input_ids_rmpad, dim=1, padding=False, min_chunk_size=0)
     if position_ids_rmpad is not None:
-        position_ids_rmpad = slice_input_tensor(position_ids_rmpad, dim=1, padding=False)
+        position_ids_rmpad = slice_input_tensor(position_ids_rmpad, dim=1, padding=False, min_chunk_size=0)
     return input_ids_rmpad, position_ids_rmpad, pad_size
 
 

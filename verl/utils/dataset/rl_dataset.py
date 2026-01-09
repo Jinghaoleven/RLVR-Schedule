@@ -33,7 +33,6 @@ from verl.utils.model import compute_position_id_with_mask
 
 logger = logging.getLogger(__name__)
 
-
 def collate_fn(data_list: list[dict]) -> dict:
     """
     Collate a batch of sample dicts into batched tensors and arrays.
@@ -59,6 +58,7 @@ def collate_fn(data_list: list[dict]) -> dict:
     for key, val in tensors.items():
         tensors[key] = torch.stack(val, dim=0)
 
+    # print("[Collate]", tensors["input_ids"].shape, tensors["position_ids"].shape, min([len(ele) for ele in non_tensors["raw_prompt_ids"]]))
     for key, val in non_tensors.items():
         non_tensors[key] = np.fromiter(val, dtype=object, count=len(val))
 

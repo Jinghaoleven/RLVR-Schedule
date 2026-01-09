@@ -1,0 +1,51 @@
+{
+    "exp_name": "Qwen3-4B",
+    "model_name": "/mnt/public/users/zhangjinghao/models/Qwen3-4B",
+    "template": "qwen_math_box",
+    "temperature": 0,
+    "top_p": 0.95,
+    "max_tokens": 40960,
+    "n_samples": 1,
+    "eval_type": "pass@k",
+    "tasks": [
+        "aime",
+        "aime25",
+        "amc",
+        "math",
+        "minerva",
+        "olympiad_bench"
+    ],
+    "results": {
+        "aime": 0.7,
+        "aime25": 0.6333333333333333,
+        "amc": 0.8674698795180723,
+        "math": 0.94,
+        "minerva": 0.44485294117647056,
+        "olympiad_bench": 0.6414814814814814
+    },
+    "avg": 0.7045229392515595,
+    "avg_lens": {
+        "aime": 16605.3,
+        "aime25": 18764.366666666665,
+        "amc": 10590.855421686747,
+        "math": 5694.462,
+        "minerva": 7683.16544117647,
+        "olympiad_bench": 12594.967407407408
+    },
+    "max_lens": {
+        "aime": 40883.0,
+        "aime25": 40864.0,
+        "amc": 40861.0,
+        "math": 40916.0,
+        "minerva": 40880.0,
+        "olympiad_bench": 40901.0
+    },
+    "formatted": {
+        "aime": 0.9666666666666667,
+        "aime25": 0.8333333333333334,
+        "amc": 0.9759036144578314,
+        "math": 0.978,
+        "minerva": 0.9632352941176471,
+        "olympiad_bench": 0.9066666666666666
+    }
+}

@@ -1,7 +1,7 @@
-cd /mnt/public/users/zhangjinghao/code/verl
-export CUDA_VISIBLE_DEVICES=2
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-export VLLM_DISABLE_DEEP_GEMM=1
+# cd /mnt/public/users/zhangjinghao/code/verl
+# export CUDA_VISIBLE_DEVICES=2
+# export VLLM_WORKER_MULTIPROC_METHOD=spawn
+# export VLLM_DISABLE_DEEP_GEMM=2
 
 # $PUB_DIR/Qwen2.5-Math-7B
 # $PUB_DIR/Qwen2.5-Math-7B-Instruct
@@ -37,11 +37,23 @@ export VLLM_DISABLE_DEEP_GEMM=1
 # $ROOT_DIR/running/LM/Qwen2.5-Math-1.5B/RL/Qwen2.5-Math-1.5B-math_lvl3to5_8k/GRPO-tkprefix-rp-allnorm-seq01-.8tar-.01coef-.6clip-15topk-cdetach-mtrain-bc.0-4lr/ckpt/global_step200_hf
 
 # source /mnt/public/users/zhangjinghao/.lmvenv/bin/activate
-python eval/evaluate_model.py \
---model_name /mnt/public/users/zhangjinghao/code/verl/result/LM/qwen3_4b_instruct/QuestA-25-sft/global_step_664_hf \
+# source /mnt/public/users/zhangjinghao/.verl-venv/bin/activate
+# source /mnt/public/users/zhangjinghao/code/project/RLFR/.rlfrvenv/bin/activate
+
+cd /mnt/public/users/zhangjinghao/code/verl
+export CUDA_VISIBLE_DEVICES=4,5,6,7
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export VLLM_DISABLE_DEEP_GEMM=1
+MODEL_NAME=/mnt/public/users/zhangjinghao/code/verl/result/LM/qwen3_4b/xcombined-base-grpo/global_step_234/hf
+EXP_NAME=Qwen3-4B-xcombined-base-grpo
+
+python eval/evaluate_parallel.py \
+--model_name $MODEL_NAME \
+--exp_name $EXP_NAME \
 --dataset_name dataset/evaluation_suite \
 --temperature 0 \
---max_tokens 24576 \
+--top_p 0.95 \
+--max_tokens 40960 \
 --template qwen_math_box \
 --n_samples 1 \
 --eval_type pass@k 

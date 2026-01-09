@@ -103,12 +103,25 @@ def _ulysses_flash_attention_forward(
         torch.distributed.all_gather(position_ids_list, position_ids, group=get_ulysses_sequence_parallel_group())
         position_ids = torch.concat(position_ids_list, dim=-1)
 
+        # indices_q = (position_ids.view(-1) == 0).nonzero().view(-1)
+        # print("[Indices]: ",indices_q)
+        # indices_q = (position_ids.view(-1) == 0).nonzero().view(-1)
+        # if len(indices_q)==0:
+        #     print("[Monkey]:", position_ids, indices_q, torch.max(position_ids), torch.min(position_ids))
+        #     from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
+
     # (bsz, seq_len, n_head/n, head_dim)
     query_length = query_states.size(1)
+    if query_length == 0:
+        # Skip flash attention on empty inputs to avoid zero-length reductions.
+        attn_output = query_states
+        if ulysses_sp_size > 1:
+            attn_output = gather_heads_scatter_seq(attn_output, seq_dim=1, head_dim=2)
+        return attn_output
+
     attn_output = _flash_attention_forward(
         query_states, key_states, value_states, attention_mask, query_length, *args, position_ids=position_ids, **kwargs
     )
-
     ########## AlltoAll for Ulysses ##########
     if ulysses_sp_size > 1:
         # (bsz, seq_len, n_head/n, head_dim) -> (bsz, seq_len/n, n_head, head_dim)
@@ -139,12 +152,14 @@ def patch_vlm_for_ulysses_input_slicing(model_class: type):
                 and getattr(self, "_needs_initial_slice", True)
             )
             if slice_now:
-                call_kwargs["inputs_embeds"] = slice_input_tensor(inputs_embeds, dim=1, padding=False)
-                call_kwargs["position_ids"] = slice_input_tensor(position_ids, dim=-1, padding=False)
+                call_kwargs["inputs_embeds"] = slice_input_tensor(
+                    inputs_embeds, dim=1, padding=False, min_chunk_size=0
+                )
+                call_kwargs["position_ids"] = slice_input_tensor(position_ids, dim=-1, padding=False, min_chunk_size=0)
                 # Also slice visual_pos_masks and deepstack_visual_embeds for Qwen3 VL models
                 if visual_pos_masks is not None:
                     original_visual_mask = visual_pos_masks
-                    sliced_visual_mask = slice_input_tensor(visual_pos_masks, dim=1, padding=False)
+                    sliced_visual_mask = slice_input_tensor(visual_pos_masks, dim=1, padding=False, min_chunk_size=0)
                     call_kwargs["visual_pos_masks"] = sliced_visual_mask
 
                     if deepstack_visual_embeds is not None:

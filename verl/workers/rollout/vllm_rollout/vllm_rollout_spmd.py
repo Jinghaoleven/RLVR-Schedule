@@ -156,9 +156,9 @@ class vLLMRollout(BaseRollout):
                 + f"max_position_embeddings={model_hf_config.max_position_embeddings}"
             )
 
-        max_model_len = int(config.max_model_len or config.prompt_length + config.response_length)
+        self.max_model_len = int(config.max_model_len or config.prompt_length + config.response_length)
 
-        if max_num_batched_tokens < max_model_len and self.config.enable_chunked_prefill:
+        if max_num_batched_tokens < self.max_model_len and self.config.enable_chunked_prefill:
             raise ValueError(
                 "Enable chunked prefill, max_num_batched_tokens is smaller than max_model_len, \
                              please increase max_num_batched_tokens or disable chunked prefill"
@@ -199,7 +199,7 @@ class vLLMRollout(BaseRollout):
             gpu_memory_utilization=config.gpu_memory_utilization,
             disable_custom_all_reduce=True,
             skip_tokenizer_init=False,
-            max_model_len=max_model_len,
+            max_model_len=self.max_model_len,
             max_num_seqs=config.max_num_seqs,
             load_format=load_format,
             disable_log_stats=config.disable_log_stats,
@@ -312,6 +312,9 @@ class vLLMRollout(BaseRollout):
 
         do_sample = prompts.meta_info.get("do_sample", True)
         is_validate = prompts.meta_info.get("validate", False)
+
+        global_steps = prompts.meta_info["global_steps"]
+        step_max_tokens = self._curriculum_params(global_steps) if self.config.response_mode == "curriculum" else self.config.response_length
         if not do_sample:
             kwargs = {
                 "best_of": 1,
@@ -319,7 +322,7 @@ class vLLMRollout(BaseRollout):
                 "top_k": -1,
                 "min_p": 0.0,
                 "temperature": 0,
-                "n": 1,  # if greedy, only 1 response
+                "n": 1,   # if greedy, only 1 response
             }
         elif is_validate:
             # TODO: try **
@@ -327,7 +330,11 @@ class vLLMRollout(BaseRollout):
                 "top_k": self.config.val_kwargs.top_k,
                 "top_p": self.config.val_kwargs.top_p,
                 "temperature": self.config.val_kwargs.temperature,
-                "n": 1,  # if validate, already repeat in ray_trainer
+                "n": 1,  # if validate, already repeat in ray_traine
+            }
+        elif do_sample and not is_validate:
+            kwargs = {
+                "max_tokens": step_max_tokens,
             }
 
         lora_requests = None
@@ -341,6 +348,9 @@ class vLLMRollout(BaseRollout):
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
+            sample_prompt_len = [len(sample['prompt_token_ids']) for sample in vllm_inputs]
+            print(f"[vLLMRollout] sampling_params: {self.sampling_params}, max_prompt_len: {max(sample_prompt_len)}, min_prompt_len: {min(sample_prompt_len)}")
+
             outputs = self.inference_engine.generate(
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,
@@ -363,12 +373,12 @@ class vLLMRollout(BaseRollout):
                             curr_log_prob.append(logprob[response_ids[i]].logprob)
                         rollout_log_probs.append(curr_log_prob)
 
-            response = pad_2d_list_to_length(response, self.pad_token_id, max_length=self.config.response_length).to(
+            response = pad_2d_list_to_length(response, self.pad_token_id, max_length=step_max_tokens).to(
                 idx.device
             )
             if self.config.calculate_log_probs:
                 rollout_log_probs = pad_2d_list_to_length(
-                    rollout_log_probs, -1, max_length=self.config.response_length
+                    rollout_log_probs, -1, max_length=step_max_tokens
                 ).to(idx.device)
                 rollout_log_probs = rollout_log_probs.to(torch.float32)
 
@@ -407,6 +417,26 @@ class vLLMRollout(BaseRollout):
             batch["rollout_log_probs"] = rollout_log_probs
 
         return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
+    
+    def _curriculum_params(self, global_steps: int) -> float:
+        # 每次读取 proxy，而不是在 __init__ 时复制到本地
+        if self.config.response_mode == "curriculum":
+            epoch = global_steps
+
+            def linear_ratio(epoch: int, max_response_ratio: float, max_curriculum_epoch: int) -> float:
+                """
+                linear schedule:
+                - epoch = 0             → ratio = max_response_ratio
+                - epoch >= max_curriculum_epoch    → ratio = 1.0
+                - 0 < epoch < end_ep    → ratio = linear between max_response_ratio and 1.0
+                """
+                return max_response_ratio - max_response_ratio * (min(epoch / max_curriculum_epoch, 1))
+
+            progress_ratio = linear_ratio(epoch, self.config.max_response_ratio, self.config.max_curriculum_epoch)
+            step_prompt_length = int(self.config.prompt_length + self.config.response_length * progress_ratio)
+            response_length =  self.max_model_len - step_prompt_length
+
+        return response_length
 
     async def resume(self, tags: list[str]):
         """Resume rollout weights or kv cache in GPU memory.

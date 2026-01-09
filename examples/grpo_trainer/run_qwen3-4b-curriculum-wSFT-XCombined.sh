@@ -4,8 +4,11 @@
 set -x
 ROOT_DIR=/mnt/public/users/zhangjinghao
 project_name=qwen3_4b
-experiment_name=xcombined-pro-wsft-grpo
+experiment_name=xcombined-pro-wsft-grpo-debug
+# experiment_name=xcombined-pro-wtrapo-grpo
+# experiment_name=limov2-pro-grpo
 
+# export CUDA_VISIBLE_DEVICES=0,1,2,3
 export WORKING_DIR=/mnt/public/users/zhangjinghao/code/verl
 cd $WORKING_DIR
 export HYDRA_FULL_ERROR=1
@@ -17,24 +20,25 @@ python3 -m verl.trainer.main_ppo \
     data.train_files=dataset/train/XCombined/train.parquet \
     data.val_files=dataset/train/MATH-lighteval/test.parquet \
     data.train_batch_size=256 \
-    data.max_prompt_length=20480 \
-    data.max_response_length=20480 \
+    data.max_prompt_length=1024 \
+    data.max_response_length=39936 \
     data.filter_overlong_prompts=True \
     data.truncation='right' \
     data.response_key=solution \
     data.trust_response=curriculum \
-    data.max_response_ratio=1.0 \
-    data.max_curriculum_epoch=10 \
+    data.max_response_ratio=0.99 \
+    data.max_curriculum_epoch=130 \
     actor_rollout_ref.model.path=$ROOT_DIR/models/Qwen3-4B \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.actor.use_sft_loss=True \
-    actor_rollout_ref.actor.sft_loss_coef=0.1 \
+    actor_rollout_ref.actor.sft_mode=forward_kl \
+    actor_rollout_ref.actor.sft_loss_coef=1.0 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0 \
-    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.actor.kl_loss_type=k3 \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
@@ -65,4 +69,4 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=25 \
     trainer.test_freq=25 \
-    trainer.total_epochs=10 $@
+    trainer.total_epochs=2 $@

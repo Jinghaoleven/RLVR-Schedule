@@ -10,13 +10,13 @@ temperature=0.6
 max_response_length=38912
 n=1
 
-python evaluation/eval_vllm_suite.py \
-  --model $model_path \
-  --n $n \
-  --max_length $max_response_length \
-  --p $topp \
-  --k $topk \
-  --t $temperature \
-  --experiment_name Qwen3-4B-Base
+# python evaluation/eval_vllm_suite.py \
+#   --model $model_path \
+#   --n $n \
+#   --max_length $max_response_length \
+#   --p $topp \
+#   --k $topk \
+#   --t $temperature \
+#   --experiment_name Qwen3-4B-Base
 
 # python evaluation/grade.py --file_dir evaluation/results/Base

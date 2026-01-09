@@ -102,6 +102,15 @@ class SFTDataset(Dataset):
             self.prompts = self.prompts.squeeze()
         self.prompts = self.prompts.tolist()
         self.responses = self.dataframe[self.response_key]
+
+        self.pic_verification = False
+        if "verification" in self.responses['extra_info'].iloc[0].keys():
+            self.pic_verification = True
+            self.verification = self.responses.apply(lambda x: series_to_item(x)["verification"], axis=1)  # noqa: B023
+            if isinstance(self.verification, pd.DataFrame):
+                self.verification = self.verification.squeeze()
+            self.verification = self.verification.tolist()
+        
         for key in self.response_dict_keys:
             try:
                 self.responses = self.responses.apply(lambda x: series_to_item(x)[key], axis=1)  # noqa: B023
@@ -112,6 +121,12 @@ class SFTDataset(Dataset):
             self.responses = self.responses.squeeze()
         self.responses = self.responses.tolist()
 
+        if self.pic_verification:
+            selected_solutions = []
+            for sols, verifs in zip(self.responses, self.verification):
+                idx = next(i for i, v in enumerate(verifs) if v == 1)
+                selected_solutions.append(sols[idx])
+            self.responses = selected_solutions
     def __len__(self):
         return len(self.prompts)
 
@@ -128,11 +143,11 @@ class SFTDataset(Dataset):
         prompt_chat_str = tokenizer.apply_chat_template(
             prompt_chat, add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs
         )
-        # response_chat_str = response + tokenizer.eos_token
-        if "\n\n**Final Answer" in response:
-            response_chat_str = "<think>\n" + response[:response.find("\n\n**Final Answer")] + "\n</think>" + response[response.find("\n\n**Final Answer"):] + tokenizer.eos_token
-        else:
-            response_chat_str = "<think>\n\n</think>\n\n" + response + tokenizer.eos_token
+        response_chat_str = response + tokenizer.eos_token
+        # if "\n\n**Final Answer" in response:
+        #     response_chat_str = "<think>\n" + response[:response.find("\n\n**Final Answer")] + "\n</think>" + response[response.find("\n\n**Final Answer"):] + tokenizer.eos_token
+        # else:
+        #     response_chat_str = "<think>\n\n</think>\n\n" + response + tokenizer.eos_token
 
         # tokenize
         prompt_ids_output = tokenizer(prompt_chat_str, return_tensors="pt", add_special_tokens=False)

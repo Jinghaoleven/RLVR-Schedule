@@ -80,6 +80,8 @@ use_sft_loss: false
 # SFT loss coefficient when use_sft_loss is enabled
 sft_loss_coef: 0.1
 
+sft_mode: vanilla
+
 # Whether to use KL loss instead of KL reward penalty. True for GRPO
 use_kl_loss: false
 

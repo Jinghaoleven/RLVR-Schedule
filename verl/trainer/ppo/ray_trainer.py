@@ -26,6 +26,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pprint import pprint
 from typing import Optional
+from functools import partial
 
 import numpy as np
 import ray
@@ -60,6 +61,7 @@ from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+from verl.utils.dataset.rlpro_dataset import RLHFProDataset
 
 
 @dataclass
@@ -361,9 +363,18 @@ class RayPPOTrainer:
         if train_sampler is None:
             train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
         if collate_fn is None:
-            from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
+            from verl.utils.dataset.rlpro_dataset import collate_fn as rlpro_default_collate_fn
+            from verl.utils.dataset.rl_dataset import collate_fn as rl_default_collate_fn
 
-            collate_fn = default_collate_fn
+            if isinstance(self.train_dataset,RLHFProDataset):
+                train_default_collate_fn = rlpro_default_collate_fn
+            else:
+                train_default_collate_fn = rl_default_collate_fn
+            
+            val_default_collate_fn = rl_default_collate_fn
+            # collate_fn = default_collate_fn
+        else:
+            train_default_collate_fn = val_default_collate_fn = collate_fn
 
         num_workers = self.config.data["dataloader_num_workers"]
 
@@ -372,7 +383,7 @@ class RayPPOTrainer:
             batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
             num_workers=num_workers,
             drop_last=True,
-            collate_fn=collate_fn,
+            collate_fn=partial(train_default_collate_fn, pad_token_id=self.tokenizer.pad_token_id) if isinstance(self.train_dataset,RLHFProDataset) else train_default_collate_fn,
             sampler=train_sampler,
         )
 
@@ -386,7 +397,7 @@ class RayPPOTrainer:
             num_workers=num_workers,
             shuffle=self.config.data.get("validation_shuffle", True),
             drop_last=False,
-            collate_fn=collate_fn,
+            collate_fn=val_default_collate_fn,
         )
 
         assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
@@ -1020,6 +1031,10 @@ class RayPPOTrainer:
                 metrics = {}
                 timing_raw = {}
 
+                # if self.global_steps == 110:
+                #     progress_bar.update(1)
+                #     self.global_steps += 1
+                #     continue
                 if hasattr(self.train_dataset, "curriculum_config"):
                     self.train_dataset.curriculum_config.update({"epoch": epoch, "step":self.global_steps})
 
