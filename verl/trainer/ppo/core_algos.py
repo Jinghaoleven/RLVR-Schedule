@@ -1558,13 +1558,14 @@ def compute_pf_ppo_reweight_data(
 #             loss = loss_fct(logits, input_ids)
         
 #     return loss
-def compute_sft_loss(input_ids, logits, loss_mask, vocab_size, mode, kl_estimator):
+def compute_sft_loss(input_ids, logits, loss_mask, vocab_size, mode, kl_estimator, config=None, rollout_is_weights=None):
     loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
     # Standard forward pass without sequence parallel
     labels = input_ids[:, 1:].contiguous()
 
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels.contiguous()
+    bs, seq, _ = shift_logits.shape
     # Flatten the tokens
     shift_logits = shift_logits.view(-1, vocab_size)
     shift_labels = shift_labels.view(-1)
@@ -1574,6 +1575,18 @@ def compute_sft_loss(input_ids, logits, loss_mask, vocab_size, mode, kl_estimato
 
     if loss_mask is not None:
         loss_mask = loss_mask[:, 1:].contiguous()
+        prompt_mask = loss_mask
+        if prompt_mask.sum()==0:
+            dumpy_data = torch.tensor(0,device=logits.device,dtype=logits.dtype)
+            metrics = None
+            if "policy" in mode:
+                metrics = {
+                    "advantages": dumpy_data,
+                    "pg_clipfrac": dumpy_data,
+                    "ppo_kl": dumpy_data,
+                    "pg_clipfrac_lower": dumpy_data
+                }
+            return dumpy_data, metrics
         loss_mask = loss_mask.view(-1)
 
     # Enable model parallelism
@@ -1630,8 +1643,153 @@ def compute_sft_loss(input_ids, logits, loss_mask, vocab_size, mode, kl_estimato
         loss = kl_penalty(
             logprob=target_log_probs, ref_logprob=ref_log_prob, kl_penalty=kl_estimator
         )
+    elif mode == "forward_kl_policy":
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        ref_log_prob = torch.zeros_like(target_log_probs)
+
+        loss = kl_penalty(
+            logprob=ref_log_prob, ref_logprob=target_log_probs, kl_penalty=kl_estimator
+        )
+
+        loss = loss.view(bs, seq)
+        target_log_probs = target_log_probs.view(bs, seq)
+        ref_log_prob = ref_log_prob.view(bs, seq)
+
+        advantages = verl_F.masked_whiten(-loss, prompt_mask) * prompt_mask
+        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss_vanilla(
+            old_log_prob=ref_log_prob,
+            log_prob=target_log_probs,
+            advantages=advantages,
+            response_mask=prompt_mask,
+            loss_agg_mode="token-mean",
+            config=config,
+            rollout_is_weights=rollout_is_weights,
+        )
+        metrics = {
+            "advantages": verl_F.masked_mean(advantages,prompt_mask),
+            "pg_clipfrac": pg_clipfrac,
+            "ppo_kl": ppo_kl,
+            "pg_clipfrac_lower": pg_clipfrac_lower
+        }
+        return pg_loss, metrics
+    elif mode == "forward_kl_policy_GSPO":
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        ref_log_prob = torch.zeros_like(target_log_probs)
+
+        loss = kl_penalty(
+            logprob=ref_log_prob, ref_logprob=target_log_probs, kl_penalty=kl_estimator
+        )
+
+        loss = loss.view(bs, seq)
+        target_log_probs = target_log_probs.view(bs, seq)
+        ref_log_prob = ref_log_prob.view(bs, seq)
+
+        advantages = verl_F.masked_whiten(-loss, prompt_mask) * prompt_mask
+        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss_gspo(
+            old_log_prob=ref_log_prob,
+            log_prob=target_log_probs,
+            advantages=advantages,
+            response_mask=prompt_mask,
+            loss_agg_mode="token-mean",
+            config=config,
+            rollout_is_weights=rollout_is_weights,
+        )
+        metrics = {
+            "advantages": verl_F.masked_mean(advantages,prompt_mask),
+            "pg_clipfrac": pg_clipfrac,
+            "ppo_kl": ppo_kl,
+            "pg_clipfrac_lower": pg_clipfrac_lower
+        }
+        return pg_loss, metrics
+    elif mode == "forward_kl_policy_ISdetach":
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        ref_log_prob = torch.zeros_like(target_log_probs)
+
+        loss = kl_penalty(
+            logprob=ref_log_prob, ref_logprob=target_log_probs, kl_penalty=kl_estimator
+        )
+
+        loss = loss.view(bs, seq)
+        target_log_probs = target_log_probs.view(bs, seq)
+        ref_log_prob = ref_log_prob.view(bs, seq)
+
+        advantages = verl_F.masked_whiten(-loss, prompt_mask) * prompt_mask
+        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss_vanilla(
+            old_log_prob=ref_log_prob,
+            log_prob=target_log_probs.detach(),
+            advantages=advantages,
+            response_mask=prompt_mask,
+            loss_agg_mode="token-mean",
+            config=config,
+            rollout_is_weights=rollout_is_weights,
+        )
+        metrics = {
+            "advantages": verl_F.masked_mean(advantages,prompt_mask),
+            "pg_clipfrac": pg_clipfrac,
+            "ppo_kl": ppo_kl,
+            "pg_clipfrac_lower": pg_clipfrac_lower
+        }
+        return pg_loss, metrics
+    elif mode == "forward_kl_policy_Advdetach":
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        ref_log_prob = torch.zeros_like(target_log_probs)
+
+        loss = kl_penalty(
+            logprob=ref_log_prob, ref_logprob=target_log_probs, kl_penalty=kl_estimator
+        )
+
+        loss = loss.view(bs, seq)
+        target_log_probs = target_log_probs.view(bs, seq)
+        ref_log_prob = ref_log_prob.view(bs, seq)
+
+        advantages = verl_F.masked_whiten(-loss, prompt_mask) * prompt_mask
+        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss_vanilla(
+            old_log_prob=ref_log_prob,
+            log_prob=target_log_probs,
+            advantages=advantages.detach(),
+            response_mask=prompt_mask,
+            loss_agg_mode="token-mean",
+            config=config,
+            rollout_is_weights=rollout_is_weights,
+        )
+        metrics = {
+            "advantages": verl_F.masked_mean(advantages,prompt_mask),
+            "pg_clipfrac": pg_clipfrac,
+            "ppo_kl": ppo_kl,
+            "pg_clipfrac_lower": pg_clipfrac_lower
+        }
+        return pg_loss, metrics
+    elif mode == "forward_kl_policy_advshift":
+        target_log_probs = verl_F.logprobs_from_logits(logits=shift_logits,labels=shift_labels)
+        ref_log_prob = torch.zeros_like(target_log_probs)
+
+        loss = kl_penalty(
+            logprob=ref_log_prob, ref_logprob=target_log_probs, kl_penalty=kl_estimator
+        )
+
+        loss = loss.view(bs, seq)
+        target_log_probs = target_log_probs.view(bs, seq)
+        ref_log_prob = ref_log_prob.view(bs, seq)
+
+        advantages = verl_F.masked_whiten(-loss, prompt_mask, shift_mean=False) * prompt_mask
+        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss_vanilla(
+            old_log_prob=ref_log_prob,
+            log_prob=target_log_probs,
+            advantages=advantages,
+            response_mask=prompt_mask,
+            loss_agg_mode="token-mean",
+            config=config,
+            rollout_is_weights=rollout_is_weights,
+        )
+        metrics = {
+            "advantages": verl_F.masked_mean(advantages,prompt_mask),
+            "pg_clipfrac": pg_clipfrac,
+            "ppo_kl": ppo_kl,
+            "pg_clipfrac_lower": pg_clipfrac_lower
+        }
+        return pg_loss, metrics
     
-    loss = agg_loss(loss_mat=loss, loss_mask=loss_mask.to(loss.device), loss_agg_mode="token-mean")
+    loss = agg_loss(loss_mat=loss.view(-1), loss_mask=loss_mask.to(loss.device), loss_agg_mode="token-mean")
     # loss = loss * loss_mask.to(loss.device)
 
     # valid_token_this_rank = torch.sum(loss_mask)
@@ -1641,4 +1799,4 @@ def compute_sft_loss(input_ids, logits, loss_mask, vocab_size, mode, kl_estimato
     # print("agg loss:", aloss.item(), "sft loss:", loss.item())
     # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
 
-    return loss
+    return loss, None

@@ -4,7 +4,7 @@
 set -x
 ROOT_DIR=/mnt/public/users/zhangjinghao
 project_name=qwen3_4b
-experiment_name=xcombined-pro-wfkl-k1-grpo-v0.001
+experiment_name=xcombined-pro-wpg-fk1-advdt-grpo-v0.001
 
 # export CUDA_VISIBLE_DEVICES=0,1,2,3
 export WORKING_DIR=/mnt/public/users/zhangjinghao/code/verl
@@ -79,7 +79,7 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.actor.use_sft_loss=True \
         actor_rollout_ref.actor.sft_loss_coef=0.001 \
-        actor_rollout_ref.actor.sft_mode=forward_kl \
+        actor_rollout_ref.actor.sft_mode=forward_kl_policy_Advdetach \
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.kl_loss_coef=0 \
         actor_rollout_ref.actor.kl_loss_type=k1 \

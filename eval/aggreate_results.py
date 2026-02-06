@@ -106,6 +106,9 @@ def main():
 
     df = pd.DataFrame(records).set_index("exp")
     df = df[tasks]
+    numeric_df = df.apply(pd.to_numeric, errors="coerce")
+    df["average"] = numeric_df.mean(axis=1, skipna=True)
+    df = df.sort_values(by="average", ascending=False)
 
     if args.table:
         print(_format_table(df))

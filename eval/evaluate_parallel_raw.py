@@ -177,7 +177,6 @@ def _evaluate_worker(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
-    model = None
     sampling_params = vllm.SamplingParams(
         n=n_samples,
         temperature=temperature,
@@ -192,18 +191,18 @@ def _evaluate_worker(
         sampling_params,
     )
 
-    results = {"__meta__": {"gpu_id": gpu_id}}
-    try:
-        model = vllm.LLM(
-            model_name,
-            tensor_parallel_size=tensor_parallel_size,
-            # swap_space=32,
-            # max_model_len=max_model_len,
-            dtype="bfloat16",
-            enable_prefix_caching=True,
-        )
+    model = vllm.LLM(
+        model_name,
+        tensor_parallel_size=tensor_parallel_size,
+        # swap_space=32,
+        # max_model_len=max_model_len,
+        dtype="bfloat16",
+        enable_prefix_caching=True,
+    )
 
-        datasets = load_from_disk(dataset_name)
+    results = {}
+    datasets = load_from_disk(dataset_name)
+    try:
         for task_name in tasks:
             indices = task_indices.get(task_name, [])
             if not indices:
@@ -252,21 +251,19 @@ def _evaluate_worker(
                 "batch_lengths": batch_lengths,
                 "to_be_saved": to_be_saved,
             }
-    except Exception as exc:
-        results["__error__"] = f"{type(exc).__name__}: {exc}"
     finally:
-        result_queue.put(results)
-        result_queue.close()
-        result_queue.join_thread()
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
         # Best-effort shutdown to avoid vLLM worker threads keeping the process alive.
-        if model is not None:
-            engine = getattr(model, "llm_engine", None)
-            if engine is not None and hasattr(engine, "shutdown"):
-                engine.shutdown()
-            elif hasattr(model, "shutdown"):
-                model.shutdown()
+        engine = getattr(model, "llm_engine", None)
+        if engine is not None and hasattr(engine, "shutdown"):
+            engine.shutdown()
+        elif hasattr(model, "shutdown"):
+            model.shutdown()
+
+    result_queue.put(results)
+    result_queue.close()
+    result_queue.join_thread()
 
 def main(
     model_name: str = "Qwen/Qwen2.5-Math-1.5B",
@@ -355,10 +352,6 @@ def main(
     aggregated = {}
     for _ in workers:
         worker_result = result_queue.get()
-        meta = worker_result.pop("__meta__", {})
-        error = worker_result.pop("__error__", None)
-        if error:
-            raise RuntimeError(f"worker failed (gpu_id={meta.get('gpu_id')}): {error}")
         for task_name, data in worker_result.items():
             if task_name not in aggregated:
                 aggregated[task_name] = {

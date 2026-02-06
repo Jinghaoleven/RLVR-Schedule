@@ -543,10 +543,28 @@ class DataParallelPPOActor(BasePPOActor):
                     
                     if self.config.use_sft_loss:
                         response_length = model_inputs["responses"].size(-1)
-                        sft_loss = compute_sft_loss(model_inputs["input_ids"][:, :-response_length - 1], prompt_logits, loss_mask=model_inputs["prompt_mask"][:, :-1], vocab_size = self.model_config.vocab_size, mode=self.config.sft_mode, kl_estimator=self.config.kl_loss_type)
+                        sft_loss, sft_metrics = compute_sft_loss(
+                            model_inputs["input_ids"][:, :-response_length - 1], 
+                            prompt_logits, 
+                            loss_mask=model_inputs["prompt_mask"][:, :-1], 
+                            vocab_size = self.model_config.vocab_size, 
+                            mode=self.config.sft_mode, 
+                            kl_estimator=self.config.kl_loss_type, 
+                            config=self.config, 
+                            rollout_is_weights=rollout_is_weights
+                        )
                         policy_loss = policy_loss + sft_loss * self.config.sft_loss_coef
                         micro_batch_metrics["actor/sft_loss"] = sft_loss.detach().item() * loss_scale_factor
                         micro_batch_metrics["actor/sft_coef"] = self.config.sft_loss_coef
+                        if sft_metrics is not None:
+                            micro_batch_metrics.update(
+                                {
+                                    "expert/advantages-mean": sft_metrics["advantages"].detach().item(),
+                                    "expert/pg_clipfrac": sft_metrics["pg_clipfrac"].detach().item(),
+                                    "expert/ppo_kl": sft_metrics["ppo_kl"].detach().item(),
+                                    "expert/pg_clipfrac_lower": sft_metrics["pg_clipfrac_lower"].detach().item(),
+                                }
+                            )
 
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz

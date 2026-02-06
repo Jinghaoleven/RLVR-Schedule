@@ -4,7 +4,7 @@
 set -x
 ROOT_DIR=/mnt/public/users/zhangjinghao
 project_name=qwen3_4b
-experiment_name=xcombined-pro-wfkl-k1-grpo-v0.001
+experiment_name=xcombined-pro-wpg-fk1-grpo-v0.001
 
 # export CUDA_VISIBLE_DEVICES=0,1,2,3
 export WORKING_DIR=/mnt/public/users/zhangjinghao/code/verl
@@ -53,7 +53,7 @@ else
         --num-gpus=8
 fi
 
-sleep 30
+sleep 50
 if [ "${RANK}" == "0" ]; then
     echo "[INFO] Submitting Ray job..."
     ray job submit --address="http://$MASTER_ADDR:8265" \
@@ -79,7 +79,7 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.actor.use_sft_loss=True \
         actor_rollout_ref.actor.sft_loss_coef=0.001 \
-        actor_rollout_ref.actor.sft_mode=forward_kl \
+        actor_rollout_ref.actor.sft_mode=forward_kl_policy \
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.kl_loss_coef=0 \
         actor_rollout_ref.actor.kl_loss_type=k1 \
@@ -109,7 +109,7 @@ if [ "${RANK}" == "0" ]; then
         trainer.project_name=$project_name \
         trainer.experiment_name=$experiment_name \
         trainer.default_local_dir=$WORKING_DIR/result/LM/$project_name/$experiment_name \
-        trainer.val_before_train=True \
+        trainer.val_before_train=False \
         trainer.n_gpus_per_node=$NPROC_PER_NODE \
         trainer.nnodes=$WORLD_SIZE \
         trainer.save_freq=25 \

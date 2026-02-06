@@ -4,7 +4,7 @@
 set -x
 ROOT_DIR=/mnt/public/users/zhangjinghao
 project_name=qwen3_4b
-experiment_name=xcombined-pro-wrkl-grpo-v0.001
+experiment_name=xcombined-pro-wpg-fk1-ISdt-grpo-v0.001
 
 # export CUDA_VISIBLE_DEVICES=0,1,2,3
 export WORKING_DIR=/mnt/public/users/zhangjinghao/code/verl
@@ -79,10 +79,10 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.actor.use_sft_loss=True \
         actor_rollout_ref.actor.sft_loss_coef=0.001 \
-        actor_rollout_ref.actor.sft_mode=reverse_kl \
+        actor_rollout_ref.actor.sft_mode=forward_kl_policy_ISdetach \
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.kl_loss_coef=0 \
-        actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+        actor_rollout_ref.actor.kl_loss_type=k1 \
         actor_rollout_ref.actor.entropy_coeff=0 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
@@ -91,7 +91,7 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.rollout.max_num_batched_tokens=40960 \
-        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=20 \
+        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
         actor_rollout_ref.actor.ulysses_sequence_parallel_size=2 \
         actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
         actor_rollout_ref.rollout.name=vllm \
@@ -100,7 +100,7 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.rollout.top_k=-1 \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
         actor_rollout_ref.rollout.n=8 \
-        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=20 \
+        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
         actor_rollout_ref.ref.fsdp_config.param_offload=True \
         actor_rollout_ref.nccl_timeout=3600 \
         algorithm.use_kl_in_reward=False \
@@ -109,7 +109,7 @@ if [ "${RANK}" == "0" ]; then
         trainer.project_name=$project_name \
         trainer.experiment_name=$experiment_name \
         trainer.default_local_dir=$WORKING_DIR/result/LM/$project_name/$experiment_name \
-        trainer.val_before_train=True \
+        trainer.val_before_train=False \
         trainer.n_gpus_per_node=$NPROC_PER_NODE \
         trainer.nnodes=$WORLD_SIZE \
         trainer.save_freq=25 \

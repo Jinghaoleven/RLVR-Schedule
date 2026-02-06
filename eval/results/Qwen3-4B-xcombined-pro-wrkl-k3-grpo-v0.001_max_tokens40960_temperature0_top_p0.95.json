@@ -1,0 +1,51 @@
+{
+    "exp_name": "Qwen3-4B-xcombined-pro-wrkl-k3-grpo-v0.001",
+    "model_name": "/mnt/public/users/zhangjinghao/code/verl/result/LM/qwen3_4b/xcombined-pro-wrkl-k3-grpo-v0.001/global_step_234/hf",
+    "template": "qwen_math_box",
+    "temperature": 0,
+    "top_p": 0.95,
+    "max_tokens": 40960,
+    "n_samples": 1,
+    "eval_type": "pass@k",
+    "tasks": [
+        "aime",
+        "aime25",
+        "amc",
+        "math",
+        "minerva",
+        "olympiad_bench"
+    ],
+    "results": {
+        "aime": 0.5666666666666667,
+        "aime25": 0.5333333333333333,
+        "amc": 0.7349397590361446,
+        "math": 0.852,
+        "minerva": 0.3125,
+        "olympiad_bench": 0.522962962962963
+    },
+    "avg": 0.5870671203331846,
+    "avg_lens": {
+        "aime": 25047.266666666666,
+        "aime25": 26060.0,
+        "amc": 16813.048192771083,
+        "math": 10525.072,
+        "minerva": 19339.378676470587,
+        "olympiad_bench": 20662.798518518517
+    },
+    "max_lens": {
+        "aime": 40880.0,
+        "aime25": 40870.0,
+        "amc": 40901.0,
+        "math": 40918.0,
+        "minerva": 40913.0,
+        "olympiad_bench": 40914.0
+    },
+    "formatted": {
+        "aime": 0.6333333333333333,
+        "aime25": 0.7,
+        "amc": 0.7831325301204819,
+        "math": 0.878,
+        "minerva": 0.6397058823529411,
+        "olympiad_bench": 0.6548148148148148
+    }
+}
