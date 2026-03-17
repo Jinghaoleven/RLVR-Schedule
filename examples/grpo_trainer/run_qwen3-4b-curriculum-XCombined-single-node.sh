@@ -4,7 +4,7 @@
 set -x
 ROOT_DIR=/mnt/public/users/zhangjinghao
 project_name=qwen3_4b
-experiment_name=xcombined-pro-grpo-v2
+experiment_name=xcombined-pro-grpo-v2.6
 
 # export CUDA_VISIBLE_DEVICES=0,1,2,3
 export WORKING_DIR=/mnt/public/users/zhangjinghao/code/verl
@@ -35,7 +35,9 @@ python3 -m verl.trainer.main_ppo \
     data.response_key=solution \
     data.trust_response=curriculum \
     data.max_response_ratio=0.99 \
+    data.min_curriculum_epoch=16 \
     data.max_curriculum_epoch=130 \
+    reward_model.use_reward_loop=False \
     actor_rollout_ref.model.path=$ROOT_DIR/models/Qwen3-4B \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -71,7 +73,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name=$experiment_name \
     trainer.default_local_dir=$WORKING_DIR/result/LM/$project_name/$experiment_name \
     trainer.val_before_train=True \
-    trainer.n_gpus_per_node=2 \
+    trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=25 \
     trainer.test_freq=300 \

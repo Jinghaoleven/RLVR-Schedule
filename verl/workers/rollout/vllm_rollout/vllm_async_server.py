@@ -529,6 +529,7 @@ class vLLMHttpServer:
                     lora_name=VLLM_LORA_NAME, lora_int_id=VLLM_LORA_INT_ID, lora_path=VLLM_LORA_PATH
                 )
 
+        # print(f"[vLLMRollout] sampling_params: {sampling_params}, prompt_len: {len(prompt_ids)}")
         generator = self.engine.generate(
             prompt=prompt,
             sampling_params=sampling_params,
