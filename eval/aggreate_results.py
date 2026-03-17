@@ -121,7 +121,7 @@ def main():
             return round(value, 3) * 100
         return value
 
-    df_export = df.applymap(_excel_cell)
+    df_export = df.map(_excel_cell)
     df_export.to_excel(output_path, engine="openpyxl")
     print(f"Saved results to {output_path}")
 

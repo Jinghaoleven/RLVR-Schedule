@@ -78,6 +78,9 @@ verl is fast with:
    algo/opo.md
    algo/baseline.md
    algo/gpg.md
+   algo/rollout_corr.md
+   algo/rollout_corr_math.md
+   algo/otb.md
 
 .. toctree::
    :maxdepth: 1
@@ -87,6 +90,7 @@ verl is fast with:
    workers/fsdp_workers
    workers/megatron_workers
    workers/sglang_worker
+   workers/trtllm_worker
    workers/model_engine
 
 .. toctree::
@@ -94,11 +98,14 @@ verl is fast with:
    :caption: Performance Tuning Guide
 
    perf/dpsk.md
+   perf/best_practices
    perf/perf_tuning
+   perf/perf_tuning_on_ascend.rst
    README_vllm0.8.md
    perf/device_tuning
    perf/verl_profiler_system.md
    perf/nsight_profiling.md
+   perf/torch_profiling.md
 
 .. toctree::
    :maxdepth: 1
@@ -113,6 +120,7 @@ verl is fast with:
 
    advance/checkpoint
    advance/rope
+   advance/attention_implementation
    advance/ppo_lora.rst
    sglang_multiturn/multiturn.rst
    sglang_multiturn/interaction_system.rst
@@ -121,9 +129,15 @@ verl is fast with:
    examples/sandbox_fusion_example
    advance/rollout_trace.rst
    advance/rollout_skip.rst
-   advance/rollout_is_migration.md
    advance/one_step_off
    advance/agent_loop
+   advance/reward_loop
+   advance/fully_async
+   data/transfer_queue.md
+   advance/grafana_prometheus.md
+   advance/fp8.md
+   advance/async-on-policy-distill
+   advance/mtp.md
 
 .. toctree::
    :maxdepth: 1
@@ -131,10 +145,16 @@ verl is fast with:
 
    amd_tutorial/amd_build_dockerfile_page.rst
    amd_tutorial/amd_vllm_page.rst
+   ascend_tutorial/ascend_ci_guide_zh.rst
    ascend_tutorial/ascend_quick_start.rst
+   ascend_tutorial/ascend_consistency.rst
    ascend_tutorial/ascend_profiling_zh.rst
    ascend_tutorial/ascend_profiling_en.rst
+   ascend_tutorial/dockerfile_build_guidance.rst
    ascend_tutorial/ascend_sglang_quick_start.rst
+   ascend_tutorial/examples/gspo_optimization_practice.md
+   ascend_tutorial/examples/dapo_multi_model_optimization_practice.md
+   ascend_tutorial/examples/ascend_sglang_best_practices.rst
 
 .. toctree::
    :maxdepth: 1
@@ -145,6 +165,11 @@ verl is fast with:
    api/trainer.rst
    api/utils.rst
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Blog
+
+   blog/v0.7.md
 
 .. toctree::
    :maxdepth: 2

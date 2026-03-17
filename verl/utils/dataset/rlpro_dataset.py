@@ -19,35 +19,24 @@ import logging
 import os
 import re
 import copy
+import traceback
 from collections import defaultdict
+from io import BytesIO
 from typing import Optional
 
 import datasets
 import numpy as np
 import torch
 from omegaconf import DictConfig, ListConfig
+from PIL import Image
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
-import verl.utils.torch_functional as verl_F
-from verl.utils.model import compute_position_id_with_mask
+from verl.utils.import_utils import load_extern_object
 
 logger = logging.getLogger(__name__)
 
-
-def collate_process(key, val, target_length, pad_token_id):
-    if val.size(0) == target_length:
-        return val
-    if key == "input_ids":
-        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=pad_token_id, left_pad=True)
-    elif key == "attention_mask":
-        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=0, left_pad=True)
-    elif key == "position_ids":
-        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=0, left_pad=True)
-    elif key == "prompt_mask":
-        return verl_F.pad_sequence_to_length(val, max_seq_len=target_length, pad_token_id=0, left_pad=True)
-
-def collate_fn(data_list: list[dict], pad_token_id: int) -> dict:
+def collate_fn(data_list: list[dict]) -> dict:
     """
     Collate a batch of sample dicts into batched tensors and arrays.
 
@@ -56,57 +45,31 @@ def collate_fn(data_list: list[dict], pad_token_id: int) -> dict:
 
     Returns:
         Dict where tensor entries are stacked into a torch.Tensor of shape
-        (batch_size, \*dims) and non-tensor entries are converted to
+        (batch_size, \\*dims) and non-tensor entries are converted to
         np.ndarray of dtype object with shape (batch_size,).
     """
     tensors = defaultdict(list)
     non_tensors = defaultdict(list)
-    
-    target_length = max(data["input_ids"].shape[0] for data in data_list)
+
     for data in data_list:
         for key, val in data.items():
             if isinstance(val, torch.Tensor):
-                # tensors[key].append(val[:target_length])
-                tensors[key].append(collate_process(key, val, target_length, pad_token_id))
+                tensors[key].append(val)
             else:
                 non_tensors[key].append(val)
 
-    tensors["input_ids"][0]
-    # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
     for key, val in tensors.items():
-        # try:
         tensors[key] = torch.stack(val, dim=0)
-        # except:
-        #     print(f"Cannot stack tensors for key: {key}, using default collate instead.")
-        #     # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
-        #     tensors[key] = torch.utils.data._utils.collate.default_collate(val)
-        #     print(f"After default collate, shape is {tensors[key].shape}.")
-    # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
 
+    # print("[Collate]", tensors["input_ids"].shape, tensors["position_ids"].shape, min([len(ele) for ele in non_tensors["raw_prompt_ids"]]))
+    # print("[Collate]", min([len(ele) for ele in non_tensors["raw_prompt"]]))
     for key, val in non_tensors.items():
         non_tensors[key] = np.fromiter(val, dtype=object, count=len(val))
 
-    # print("[CollatePro]", pad_token_id, tensors["input_ids"].shape, tensors["position_ids"].shape, min([len(ele) for ele in non_tensors["raw_prompt_ids"]]))
-    # def first_valid_pos_is_one(attention_mask, position_ids):
-    #     """
-    #     attention_mask: Long/Bool Tensor [B, seq_len]
-    #     position_ids:   Long Tensor      [B, seq_len]
-    #     return: Bool Tensor [B]
-    #     """
-    #     first_valid_idx = attention_mask.long().argmax(dim=-1)  # [B]
-    #     first_pos_id = position_ids.gather(
-    #         dim=1,
-    #         index=first_valid_idx.unsqueeze(1)
-    #     ).squeeze(1)
-    #     return first_pos_id == 1
-    # if first_valid_pos_is_one(tensors["attention_mask"],tensors["position_ids"]).sum() > 0:
-    #     print("[first_valid_pos_is_one]:", first_valid_pos_is_one(tensors["attention_mask"],tensors["position_ids"]))
-    #     from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
-    
     return {**tensors, **non_tensors}
 
 def get_valid_response(example, response_key, is_random: bool = False):
-    all_solutions = example["extra_info"][response_key]
+    # all_solutions = example["extra_info"][response_key]
     verification = example["extra_info"].get("verification", None)
     if len(example["extra_info"][response_key]) > 1:
         valid_idx = []
@@ -120,11 +83,11 @@ def get_valid_response(example, response_key, is_random: bool = False):
                 ind = np.random.choice(valid_idx)
             else:
                 ind = valid_idx[0]
-        return example["extra_info"][response_key][ind]
+        response =  example["extra_info"][response_key][ind]
     else:
-        return example["extra_info"][response_key]
-
-
+        response = example["extra_info"][response_key]
+    return response
+    
 class RLHFProDataset(Dataset):
     """
     Load and preprocess RLHF data from Parquet files.
@@ -147,8 +110,8 @@ class RLHFProDataset(Dataset):
         data_files: str | list[str],
         tokenizer: PreTrainedTokenizer,
         config: DictConfig,
-        curriculum_config = None,
         processor: Optional[ProcessorMixin] = None,
+        max_samples: int = -1,
     ):
         if not isinstance(data_files, list | ListConfig):
             data_files = [data_files]
@@ -157,34 +120,47 @@ class RLHFProDataset(Dataset):
         self.original_data_files = copy.deepcopy(data_files)  # use for resume
         self.tokenizer = tokenizer
         self.processor = processor
+        self.max_samples = max_samples
         self.config = config
-        self.curriculum_config = curriculum_config                     # Manager().dict()
 
         self.cache_dir = os.path.expanduser(config.get("cache_dir", "~/.cache/verl/rlhf"))
         self.prompt_key = config.get("prompt_key", "prompt")
         self.response_key = config.get("response_key", "response")
         self.image_key = config.get("image_key", "images")
         self.video_key = config.get("video_key", "videos")
+        self.image_patch_size = config.get("image_patch_size", 14)
         self.max_prompt_length = config.get("max_prompt_length", 1024)
-        self.max_response_length = config.get("max_response_length", 1024)
-        self.step_prompt_length = self.max_prompt_length
         self.return_raw_chat = config.get("return_raw_chat", False)
         self.return_full_prompt = config.get("return_full_prompt", False)
         self.truncation = config.get("truncation", "error")
         self.filter_overlong_prompts = config.get("filter_overlong_prompts", True)
         self.apply_chat_template_kwargs = config.get("apply_chat_template_kwargs", {})
-        self.response_mode = config.get("trust_response", None)
-        self.max_response_ratio = config.get("max_response_ratio", 0)
-        self.max_curriculum_epoch = config.get("max_curriculum_epoch", None)
+
+        self.tool_config_path = config.get("tool_config_path", None)
+        self.tool_schemas = None
+        if self.tool_config_path:
+            try:
+                from verl.tools.utils.tool_registry import initialize_tools_from_config
+
+                tool_list = initialize_tools_from_config(self.tool_config_path)
+                # match ToolAgentLoop behaviour: model_dump to plain dicts
+                self.tool_schemas = [
+                    tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True) for tool in tool_list
+                ]
+            except Exception as e:
+                logger.warning("Failed to initialize tools from %s: %s", self.tool_config_path, e)
+                self.tool_schemas = None
 
         self.num_workers = config.get("filter_overlong_prompts_workers", max(1, os.cpu_count() // 4))
-        self.num_workers = min(self.num_workers, os.cpu_count())
+        self.num_workers = min(self.num_workers, os.cpu_count()) if self.num_workers is not None else None
         self.use_shm = config.get("use_shm", False)
         self.chat_template_func = config.get("chat_template_func", None)
         self.need_tools_kwargs = config.get("need_tools_kwargs", False)
         self.filter_prompts = config.get("filter_prompts", True)
         self.serialize_dataset = False
         self.return_multi_modal_inputs = config.get("return_multi_modal_inputs", True)
+        self.shuffle = config.get("shuffle", False)
+        self.seed = config.get("seed")
 
         self._download()
         self._read_files_and_tokenize()
@@ -199,12 +175,28 @@ class RLHFProDataset(Dataset):
     def _read_files_and_tokenize(self):
         dataframes = []
         for parquet_file in self.data_files:
-            # read parquet files and cache
-            dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
+            # read files and cache
+            if parquet_file.endswith(".parquet"):
+                dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
+            elif parquet_file.endswith(".json"):
+                dataframe = datasets.load_dataset("json", data_files=parquet_file)["train"]
+            else:
+                raise ValueError(f"Unsupported file format: {parquet_file}")
             dataframes.append(dataframe)
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
 
+        total = len(self.dataframe)
         print(f"dataset len: {len(self.dataframe)}")
+
+        if self.max_samples > 0 and self.max_samples < total:
+            if self.shuffle:
+                rngs_args = (self.seed,) if self.seed is not None else ()
+                rng = np.random.default_rng(*rngs_args)
+                indices = rng.choice(total, size=self.max_samples, replace=False)
+            else:
+                indices = np.arange(self.max_samples)
+            self.dataframe = self.dataframe.select(indices.tolist())
+            print(f"selected {self.max_samples} random samples out of {total}")
 
         self.dataframe = self.maybe_filter_out_long_prompts(self.dataframe)
 
@@ -214,7 +206,6 @@ class RLHFProDataset(Dataset):
             tokenizer = self.tokenizer
             processor = self.processor
             prompt_key = self.prompt_key
-            response_key = self.response_key
             image_key = self.image_key
             video_key = self.video_key
 
@@ -222,47 +213,73 @@ class RLHFProDataset(Dataset):
                 from verl.utils.dataset.vision_utils import process_image, process_video
 
                 def doc2len(doc) -> int:
-                    messages = self._build_messages(doc)
-                    raw_prompt = self.processor.apply_chat_template(
-                        messages, add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs
-                    )
-                    images = (
-                        [process_image(image) for image in doc[image_key]]
-                        if image_key in doc and doc[image_key]
-                        else None
-                    )
-                    videos = (
-                        [process_video(video) for video in doc[video_key]]
-                        if video_key in doc and doc[video_key]
-                        else None
-                    )
+                    try:
+                        messages = self._build_messages(doc)
+                        # pass tool schemas if available so the processor can format prompts
+                        apply_kwargs = dict(**self.apply_chat_template_kwargs)
+                        if self.tool_schemas is not None:
+                            apply_kwargs["tools"] = self.tool_schemas
 
-                    return len(processor(text=[raw_prompt], images=images, videos=videos)["input_ids"][0])
+                        raw_prompt = self.processor.apply_chat_template(
+                            messages, add_generation_prompt=True, tokenize=False, **apply_kwargs
+                        )
+                        if image_key in doc and doc[image_key]:
+                            images = [
+                                process_image(image, image_patch_size=self.image_patch_size) for image in doc[image_key]
+                            ]
+                        else:
+                            images = None
+
+                        if video_key in doc and doc[video_key]:
+                            videos, video_metadata = zip(
+                                *[
+                                    process_video(
+                                        video, image_patch_size=self.image_patch_size, return_video_metadata=True
+                                    )
+                                    for video in doc[video_key]
+                                ],
+                                strict=True,
+                            )
+                            videos = list(videos)
+                            video_metadata = list(video_metadata)
+                            videos_kwargs = {"video_metadata": video_metadata, "do_sample_frames": False}
+                        else:
+                            videos = None
+                            videos_kwargs = {}
+
+                        return len(
+                            processor(text=[raw_prompt], images=images, videos=videos, videos_kwargs=videos_kwargs)[
+                                "input_ids"
+                            ][0]
+                        )
+                    except Exception:
+                        print("Error processing one of the samples, skipping...")
+                        traceback.print_exc()
+                        return self.max_prompt_length + 1
 
             else:
 
                 def doc2len(doc) -> int:
-                    full_doc = copy.deepcopy(doc[prompt_key])
-                    # full_doc.append({'content': '<think>\n'+doc["extra_info"][response_key]+'\n</think>', 'role': 'assistant'})
-                    return len(
-                        tokenizer.apply_chat_template(
-                            full_doc, add_generation_prompt=True, **self.apply_chat_template_kwargs
+                    try:
+                        apply_kwargs = dict(**self.apply_chat_template_kwargs)
+                        if self.tool_schemas is not None:
+                            apply_kwargs["tools"] = self.tool_schemas
+
+                        return len(
+                            tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True, **apply_kwargs)
                         )
-                    )
+                    except Exception:
+                        print("Error processing one of the samples, skipping...")
+                        traceback.print_exc()
+                        return self.max_prompt_length + 1
 
             dataframe = dataframe.filter(
-                lambda doc: doc2len(doc) <= self.max_prompt_length and doc2len(doc) > 0,
+                lambda doc: doc2len(doc) <= self.max_prompt_length,
                 num_proc=self.num_workers,
                 desc=f"Filtering prompts longer than {self.max_prompt_length} tokens",
-            ) 
-            print(f"filter dataset len1: {len(dataframe)}")
-            dataframe = dataframe.filter(
-                lambda doc: doc["extra_info"][response_key] is not None,
-                num_proc=self.num_workers,
-                desc=f"Filtering response none",
             )
 
-            print(f"filter dataset len2: {len(dataframe)}")
+            print(f"filter dataset len: {len(dataframe)}")
         return dataframe
 
     def resume_dataset_state(self):
@@ -274,248 +291,92 @@ class RLHFProDataset(Dataset):
         else:
             print(r"old dataloader ckpt file is used, please train from scratch for better ckpt performance")
 
+    def __getstate__(self):
+        if not self.serialize_dataset:
+            state = self.__dict__.copy()
+
+            if "dataframe" in state:
+                del state["dataframe"]
+            return state
+
+        return self.__dict__.copy()
+
     def __len__(self):
         return len(self.dataframe)
 
     def _build_messages(self, example: dict, with_response: bool = False):
-        messages: list = copy.deepcopy(example.get(self.prompt_key))
+        """Replace <image> and <video> placeholder in messages with corresponding image and video
+        which is required by processor.apply_chat_template.
+        - <image>: {"type": "image", **image}
+        - <video>: {"type": "video", **video}
 
-        if self.image_key in example or self.video_key in example:
-            for message in messages:
-                content = message["content"]
-                content_list = []
-                segments = re.split("(<image>|<video>)", content)
-                segments = [item for item in segments if item != ""]
-                for segment in segments:
-                    if segment == "<image>":
-                        content_list.append({"type": "image"})
-                    elif segment == "<video>":
-                        content_list.append({"type": "video"})
+        Args:
+            example: Row dictionary from dataframe.
+
+        Returns:
+            messages: List of messages with replaced placeholder.
+        """
+        messages: list = copy.deepcopy(example[self.prompt_key])
+        # When concatenating image and video datasets, pop will return None for image or video sample
+        images = example.pop(self.image_key, None) or []
+        videos = example.pop(self.video_key, None) or []
+
+        image_offset, video_offset = 0, 0
+        for message in messages:
+            if not images and not videos:
+                continue
+            assert self.processor is not None, "processor is needed to process image and video"
+
+            content = message["content"]
+            if not isinstance(content, str):
+                continue
+
+            content_list = []
+            segments = re.split("(<image>|<video>)", content)
+            segments = [item for item in segments if item != ""]
+            for segment in segments:
+                if segment == "<image>":
+                    assert image_offset < len(images), f"image_offset {image_offset} >= len(images) {len(images)}"
+                    image = images[image_offset]
+                    if isinstance(image, Image.Image):
+                        image = image.convert("RGB")
+                        content_list.append({"type": "image", "image": image})
+                    elif isinstance(image, dict):
+                        if "bytes" in image:
+                            image["image"] = Image.open(BytesIO(image["bytes"]))
+                        content_list.append({"type": "image", **image})
                     else:
-                        content_list.append({"type": "text", "text": segment})
-
-                message["content"] = content_list
-            
-            if with_response:
-                response = get_valid_response(example, self.response_key, is_random=True)
-                messages.append({'content': [{"type": "text", "text": '<think>\n'+response+'\n</think>'}], 'role': 'assistant'})
-        else:
-            if with_response:
-                # response = example["extra_info"][self.response_key]
-                response = get_valid_response(example, self.response_key, is_random=True)
-                # For thinking-model
-                if "<think>" in response:
-                    messages.append({'content': response.replace("<think> ","<think>"), 'role': 'assistant'})
+                        raise TypeError(f"image must be dict or PIL.Image, unsupported image type: {type(image)}")
+                    image_offset += 1
+                elif segment == "<video>":
+                    assert video_offset < len(videos), f"video_offset {video_offset} >= len(videos) {len(videos)}"
+                    content_list.append({"type": "video", **videos[video_offset]})
+                    video_offset += 1
                 else:
-                    messages.append({'content': '<think>\n'+response+'\n</think>', 'role': 'assistant'})
-                # For instruct-model
-                # if "<think>" in response:
-                #     messages.append({'content': response.replace("<think> ","").replace("</think>",""), 'role': 'assistant'})
-                # else:
-                #     messages.append({'content': response, 'role': 'assistant'})
+                    content_list.append({"type": "text", "text": segment})
+            message["content"] = content_list
 
+        if with_response:
+            response = get_valid_response(example, self.response_key, is_random=True)
+            if not images and not videos:
+                messages.append({'content': response, 'role': 'assistant'})
+            else:
+                messages.append({'content': [{"type": "text", "text": response}], 'role': 'assistant'})
+
+        assert image_offset == len(images), f"image_offset {image_offset} != len(images) {len(images)}"
+        assert video_offset == len(videos), f"video_offset {video_offset} != len(videos) {len(videos)}"
         return messages
-    
-    def _curriculum_params(self):
-        # 每次读取 proxy，而不是在 __init__ 时复制到本地
-        if self.response_mode == "curriculum":
-            # epoch = self.curriculum_config.get("epoch")
-            epoch = self.curriculum_config.get("step")
-
-            def linear_ratio(epoch: int, max_response_ratio: float, max_curriculum_epoch: int) -> float:
-                """
-                linear schedule:
-                - epoch = 0             → ratio = max_response_ratio
-                - epoch >= max_curriculum_epoch    → ratio = 1.0
-                - 0 < epoch < end_ep    → ratio = linear between max_response_ratio and 1.0
-                """
-                return max_response_ratio - max_response_ratio * (min(epoch / max_curriculum_epoch, 1))
-
-            progress_ratio = linear_ratio(epoch, self.max_response_ratio, self.max_curriculum_epoch)
-            self.step_prompt_length = round(self.max_prompt_length + self.max_response_length * progress_ratio)
-            # print(f"curriculum epoch: {epoch}, progress_ratio: {progress_ratio}, step_prompt_length: {self.step_prompt_length}")
-        elif self.response_mode == "batch_random":
-            progress_ratio = verl_F.sample_zero_plus_trunc_exp(1, p_zero=0.7, lam=4.0)
-        elif self.response_mode == "batch_curriculum":
-            epoch = self.curriculum_config.get("epoch")
-            progress_ratio = verl_F.sample_zero_plus_trunc_exp(1, p_zero=0.7, lam=4.0)
-
-        return progress_ratio
 
     def __getitem__(self, item):
-        """
-        Note that we also return the raw_input_ids so that it can be combined with other chat template
-        """
-        progress_ratio = self._curriculum_params()
+        """For rollout, apply_chat_template has been moved to AgentLoop, so we only return raw_prompt here."""
         row_dict: dict = self.dataframe[item]
-        # logger.warning(f"progress_ratio{progress_ratio}, {self.step_prompt_length}")
-        
-        with_response = progress_ratio > 0
-        prefix_messages = self._build_messages(row_dict, with_response=False)
-        messages = self._build_messages(row_dict, with_response=with_response)
-        model_inputs = {}
+        row_dict["raw_prompt"] = self._build_messages(row_dict, with_response=False)
+        row_dict["raw_prompt_response"] = self._build_messages(row_dict, with_response=True)
+        # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
 
-        if self.processor is not None:
-            from verl.utils.dataset.vision_utils import process_image, process_video
-
-            raw_prompt = self.processor.apply_chat_template(
-                prefix_messages, add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs
-            )
-            raw_prompt_response = self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=not with_response, tokenize=False, **self.apply_chat_template_kwargs
-            )
-            multi_modal_data = {}
-
-            images = None
-            row_dict_images = row_dict.pop(self.image_key, None)
-            if row_dict_images:
-                images = [process_image(image) for image in row_dict_images]
-
-                # due to the image key is "image" instead of "images" in vllm, we need to use "image" here
-                # link: https://github.com/vllm-project/vllm/blob/3c545c0c3b98ee642373a308197d750d0e449403/vllm/multimodal/parse.py#L205
-                multi_modal_data["image"] = images
-
-            videos = None
-            row_dict_videos = row_dict.pop(self.video_key, None)
-            if row_dict_videos:
-                videos = [process_video(video) for video in row_dict_videos]
-
-                # due to the video key is "video" instead of "videos" in vllm, we need to use "video" here
-                # link: https://github.com/vllm-project/vllm/blob/3c545c0c3b98ee642373a308197d750d0e449403/vllm/multimodal/parse.py#L205
-                multi_modal_data["video"] = [video.numpy() for video in videos]
-
-            model_inputs_prefix = self.processor(text=[raw_prompt], images=images, videos=videos, return_tensors="pt")
-            model_inputs = self.processor(text=[raw_prompt_response], images=images, videos=videos, return_tensors="pt")
-
-            prompt_length = model_inputs_prefix["input_ids"].size(1)
-            response_length = model_inputs["input_ids"].size(1) - model_inputs_prefix["input_ids"].size(1)
-            sample_length = prompt_length + round(response_length * progress_ratio)
-
-            input_ids = model_inputs.pop("input_ids")[:,:sample_length]
-            attention_mask = model_inputs.pop("attention_mask")[:,:sample_length]
-            prompt_attention_mask = model_inputs_prefix.pop("attention_mask")
-
-            if "second_per_grid_ts" in model_inputs:
-                model_inputs.pop("second_per_grid_ts")
-
-            # There's a trap here, multi_modal_inputs has to be a dict, not BatchFeature
-            row_dict["multi_modal_data"] = multi_modal_data
-
-            # We will do batch.union() in the trainer,
-            # so we cannot have "multi_modal_inputs" in row_dict if rollout generates new multi_modal_inputs
-            if self.return_multi_modal_inputs:
-                row_dict["multi_modal_inputs"] = dict(model_inputs)
-
-                # second_per_grid_ts isn't used for training, just for mrope
-                row_dict["multi_modal_inputs"].pop("second_per_grid_ts", None)
-
-        else:
-            if self.apply_chat_template_kwargs.get("chat_template") is None:
-                assert hasattr(self.tokenizer, "chat_template"), (
-                    "chat_template should be provided in apply_chat_template_kwargs or tokenizer config, "
-                    "models like GLM can copy chat_template.jinja from instruct models"
-                )
-            # import pdb; pdb.set_trace()
-            # from remote_pdb import RemotePdb; RemotePdb('127.0.0.1',0).set_trace()
-            raw_prompt = self.tokenizer.apply_chat_template(
-                prefix_messages, add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs
-            )
-            raw_prompt_response = self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=not with_response, tokenize=False, **self.apply_chat_template_kwargs
-            )
-            model_inputs_prefix = self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)
-            model_inputs = self.tokenizer(raw_prompt_response, return_tensors="pt", add_special_tokens=False)
-            
-            prompt_length = model_inputs_prefix["input_ids"].size(1)
-            response_length = model_inputs["input_ids"].size(1) - model_inputs_prefix["input_ids"].size(1)
-            sample_length = prompt_length + round(response_length * progress_ratio)
-            
-            input_ids = model_inputs.pop("input_ids")[:,:sample_length]
-            attention_mask = model_inputs.pop("attention_mask")[:,:sample_length]
-            prompt_attention_mask = model_inputs_prefix.pop("attention_mask")
-
-        hint_mask = verl_F.get_hint_mask(
-            attention_mask,
-            prompt_attention_mask,
-            max_length=self.step_prompt_length,
-            pad_token_id=self.tokenizer.pad_token_id,
-            left_pad=True,
-            truncation=self.truncation,
-        )
-
-        input_ids, attention_mask = verl_F.postprocess_data(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_length=self.step_prompt_length,
-            pad_token_id=self.tokenizer.pad_token_id,
-            left_pad=True,
-            truncation=self.truncation,
-        )
-        # logger.warning(f"progress_ratio{progress_ratio}, {self.step_prompt_length},{input_ids.shape}")
-        if self.processor is not None and "Qwen2VLImageProcessor" in self.processor.image_processor.__class__.__name__:
-            # qwen-vl mrope
-            if "Qwen3VLProcessor" in self.processor.__class__.__name__:
-                from verl.models.transformers.qwen3_vl import get_rope_index
-            else:
-                from verl.models.transformers.qwen2_vl import get_rope_index
-
-            vision_position_ids = get_rope_index(
-                self.processor,
-                input_ids=input_ids[0],
-                image_grid_thw=model_inputs.get("image_grid_thw"),
-                video_grid_thw=model_inputs.get("video_grid_thw"),
-                second_per_grid_ts=model_inputs.get("second_per_grid_ts"),
-                attention_mask=attention_mask[0],
-            )  # (3, seq_length)
-            valid_mask = attention_mask[0].bool()
-            text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long)
-            text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
-            position_ids = [torch.cat((text_position_ids, vision_position_ids), dim=0)]  # (1, 4, seq_length)
-        elif self.processor is not None and "Glm4vImageProcessor" in self.processor.image_processor.__class__.__name__:
-            from verl.models.transformers.glm4v import get_rope_index
-
-            vision_position_ids = get_rope_index(
-                self.processor,
-                input_ids=input_ids[0],
-                image_grid_thw=model_inputs.get("image_grid_thw"),
-                video_grid_thw=model_inputs.get("video_grid_thw"),
-                attention_mask=attention_mask[0],
-            )  # (3, seq_length)
-            valid_mask = attention_mask[0].bool()
-            text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long)
-            text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
-            position_ids = [torch.cat((text_position_ids, vision_position_ids), dim=0)]  # (1, 4, seq_length)
-        else:
-            position_ids = compute_position_id_with_mask(attention_mask)
-
-        row_dict["input_ids"] = input_ids[0]
-        row_dict["attention_mask"] = attention_mask[0]
-        row_dict["position_ids"] = position_ids[0]
-        row_dict["prompt_mask"] = hint_mask[0]
-
-        raw_prompt_ids = self.tokenizer.encode(raw_prompt_response, add_special_tokens=False)[:sample_length]
-
-        if len(raw_prompt_ids) > self.step_prompt_length:
-            if self.truncation == "left":
-                raw_prompt_ids = raw_prompt_ids[-self.step_prompt_length:]
-            elif self.truncation == "right":
-                raw_prompt_ids = raw_prompt_ids[:self.step_prompt_length]
-            elif self.truncation == "middle":
-                left_half = self.step_prompt_length // 2
-                right_half = self.step_prompt_length - left_half
-                raw_prompt_ids = raw_prompt_ids[:left_half] + raw_prompt_ids[-right_half:]
-            elif self.truncation == "error":
-                raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.step_prompt_length}.")
-
-        row_dict["raw_prompt_ids"] = raw_prompt_ids
-        # logger.warning(f"progress_ratio{self.tokenizer.decode(raw_prompt_ids, add_special_tokens=False)}")
-        # encode prompts without chat template
-        if self.return_raw_chat:
-            row_dict["raw_prompt"] = messages
-
-        # get prompts with chat template
-        if self.return_full_prompt:
-            row_dict["full_prompts"] = self.tokenizer.decode(raw_prompt_ids, add_special_tokens=False)  # array of strings
+        # TODO(wuxibin): We still need a dummy tensor to make sure DataProto.batch is not empty.
+        # Remove this after deprecate DataProto by TensorDict.
+        row_dict["dummy_tensor"] = torch.tensor([0], dtype=torch.uint8)
 
         # add index for each prompt
         if "extra_info" not in row_dict or row_dict["extra_info"] is None:
@@ -531,12 +392,115 @@ class RLHFProDataset(Dataset):
         row_dict["interaction_kwargs"] = interaction_kwargs
         return row_dict
 
-    def __getstate__(self):
-        if not self.serialize_dataset:
-            state = self.__dict__.copy()
+    @classmethod
+    async def process_vision_info(
+        cls,
+        messages: list[dict],
+        image_patch_size,
+        config: DictConfig,
+    ) -> tuple[list[Image.Image], list[tuple[torch.Tensor, dict]]]:
+        """Extract images and videos from messages.
 
-            if "dataframe" in state:
-                del state["dataframe"]
-            return state
+        This method is called by AgentLoop (e.g SingleTurnAgentLoop) before apply_chat_template to
+        the `raw_prompt` from dataset. User may customize RLHFDataset and override this method to
+        support custom vision extraction.
 
-        return self.__dict__.copy()
+        >>> messages = kwargs["raw_prompt"]
+        >>> images, videos = RLHFDataset.process_vision_info(messages, image_patch_size)
+        >>> videos, video_metadatas = zip(*videos)
+        >>> raw_prompt = processor.apply_chat_template(messages, tokenize=False)
+        >>> inputs = processor(text=[raw_prompt], images=images, videos=videos,
+        ...                    video_metadata=video_metadatas, do_sample_frames=False)
+
+        Args:
+            messages: List of messages from dataset `raw_prompt`.
+            image_patch_size: Image patch size for processor.
+            config: Config for dataset.
+
+        Returns:
+            images: List of images.
+            videos: List of videos, each video is a tuple of (video_tensor, video_metadata).
+        """
+        from qwen_vl_utils import process_vision_info
+
+        images, videos = process_vision_info(messages, image_patch_size=image_patch_size, return_video_metadata=True)
+        return images, videos
+
+    def split(self, num_splits: int):
+        """
+        split the dataset into num_splits sub-datasets
+        Args:
+            num_splits: specified number of splits
+        Returns:
+            List[RLHFProDataset]: list of RLHFProDataset splits
+        Raises:
+            ValueError: if num_splits is not a positive integer
+        """
+        if not isinstance(num_splits, int) or num_splits <= 0:
+            raise ValueError(f"num_splits must be a positive integer, got {num_splits}")
+
+        if not hasattr(self, "dataframe"):
+            raise AttributeError(
+                "dataframe not found in RLHFProDataset\n"
+                "reason: _read_files_and_tokenize() not called or Parquet file loading failed"
+            )
+        if self.dataframe is None:
+            raise ValueError("RLHFProDataset dataframe 为 None!")
+
+        total_samples = len(self.dataframe)
+        print(f"total_samples: {total_samples}")
+        if total_samples == 0:
+            raise ValueError("Cannot split an empty dataset")
+        if total_samples % num_splits != 0:
+            raise ValueError(f"Cannot split dataset size {total_samples} into {num_splits} splits")
+        split_size = total_samples // num_splits
+        splits = []
+
+        for i in range(num_splits):
+            start_idx = i * split_size
+            end_idx = (i + 1) * split_size if i < num_splits - 1 else total_samples
+
+            split_dataframe = self.dataframe.select(range(start_idx, end_idx))
+
+            split_dataset = RLHFProDataset(
+                data_files=self.data_files,
+                tokenizer=self.tokenizer,
+                config=self.config,
+                processor=self.processor,
+                max_samples=self.max_samples,
+            )
+            split_dataset.dataframe = split_dataframe
+            split_dataset.serialize_dataset = self.serialize_dataset
+            split_dataset.original_data_files = self.original_data_files
+
+            splits.append(split_dataset)
+
+        return splits
+
+def get_dataset_class(data_config: DictConfig):
+    """Get RLHF dataset class.
+
+    Args:
+        data_config: The data config.
+
+    Returns:
+        dataset_cls: The dataset class.
+    """
+
+    # Check if a custom dataset class is specified in the data configuration
+    # and if the path to the custom class is provided
+    if "custom_cls" in data_config and data_config.custom_cls.get("path", None) is not None:
+        # Dynamically load the custom dataset class
+        dataset_cls = load_extern_object(data_config.custom_cls.path, data_config.custom_cls.name)
+        # Verify that the custom dataset class inherits from torch.utils.data.Dataset
+        if not issubclass(dataset_cls, Dataset):
+            raise TypeError(
+                f"The custom dataset class '{data_config.custom_cls.name}' from "
+                f"'{data_config.custom_cls.path}' must inherit from torch.utils.data.Dataset"
+            )
+    else:
+        # Use the default RLHFDataset class if no custom class is specified
+        dataset_cls = RLHFProDataset
+    print(f"Using dataset class: {dataset_cls.__name__}")
+
+    return dataset_cls
