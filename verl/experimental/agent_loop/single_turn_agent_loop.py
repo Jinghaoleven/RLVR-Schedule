@@ -43,8 +43,8 @@ class SingleTurnAgentLoop(AgentLoopBase):
         if validate:
             messages = list(kwargs["raw_prompt"])
         else:
-            if self.config.actor_rollout_ref.rollout.response_mode == "curriculum":
-                progress_ratio = self._curriculum_params(global_steps)
+            if self.config.actor_rollout_ref.rollout.rollout_strategy == "prefix":
+                progress_ratio = self._prefix_curriculum(global_steps)
                 with_response = progress_ratio > 0
             if with_response:
                 messages = list(kwargs["raw_prompt_response"])
@@ -127,20 +127,20 @@ class SingleTurnAgentLoop(AgentLoopBase):
         )
         return output
     
-    def _curriculum_params(self, global_steps: int) -> float:
+    def _prefix_curriculum(self, global_steps: int) -> float:
         # 每次读取 proxy，而不是在 __init__ 时复制到本地
         self.max_model_len = self.config.actor_rollout_ref.rollout.max_model_len or self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length
 
-        def linear_ratio(epoch: int, max_response_ratio: float, max_curriculum_epoch: int, min_curriculum_epoch: int) -> float:
+        def linear_ratio(epoch: int, max_prefix_ratio: float, max_prefix_epoch: int, min_prefix_epoch: int) -> float:
             """
             linear schedule:
-            - epoch = 0             → ratio = max_response_ratio
-            - epoch >= max_curriculum_epoch    → ratio = 1.0
-            - 0 < epoch < end_ep    → ratio = linear between max_response_ratio and 1.0
+            - epoch = 0             → ratio = max_prefix_ratio
+            - epoch >= max_prefix_epoch    → ratio = 1.0
+            - 0 < epoch < end_ep    → ratio = linear between max_prefix_ratio and 1.0
             """
-            return max_response_ratio - max_response_ratio * (min(max(epoch-min_curriculum_epoch,1) / max_curriculum_epoch, 1))
-            # return max_response_ratio - max_response_ratio * (min(epoch / max_curriculum_epoch, 1))
+            return max_prefix_ratio - max_prefix_ratio * (min(max(epoch-min_prefix_epoch,1) / max_prefix_epoch, 1))
+            # return max_prefix_ratio - max_prefix_ratio * (min(epoch / max_prefix_epoch, 1))
 
-        progress_ratio = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_response_ratio, self.config.actor_rollout_ref.rollout.max_curriculum_epoch, self.config.actor_rollout_ref.rollout.min_curriculum_epoch)
+        progress_ratio = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_prefix_ratio, self.config.actor_rollout_ref.rollout.max_prefix_epoch, self.config.actor_rollout_ref.rollout.min_prefix_epoch)
 
         return progress_ratio

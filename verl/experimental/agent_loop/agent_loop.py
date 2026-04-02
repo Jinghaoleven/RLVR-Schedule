@@ -434,8 +434,8 @@ class AgentLoopWorker:
             sampling_params["temperature"] = config.val_kwargs.temperature
             sampling_params["max_tokens"] = config.response_length
         else:
-            if self.config.actor_rollout_ref.rollout.response_mode == "curriculum":
-                _, step_response_length = self._curriculum_params(batch.meta_info.get("global_steps")) 
+            if self.config.actor_rollout_ref.rollout.rollout_strategy == "prefix":
+                _, step_response_length = self._prefix_curriculum(batch.meta_info.get("global_steps")) 
                 sampling_params["max_tokens"] = step_response_length
 
         # by default, we assume it's a single turn agent
@@ -542,16 +542,59 @@ class AgentLoopWorker:
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
 
         # TODO(wuxibin): remove padding and use tensordict.
-        if self.config.actor_rollout_ref.rollout.response_mode == "curriculum" and not validate:
-            step_prompt_length, step_response_length = self._curriculum_params(global_steps) 
+        valid_prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
+        valid_response_length = self.config.actor_rollout_ref.rollout.response_length
+        if self.config.actor_rollout_ref.rollout.rollout_strategy in ["prefix","on_policy_prefix","on_policy_acc_prefix"] and not validate:
+            step_prompt_length, step_response_length, prefix_ratio = self._prefix_curriculum(global_steps) 
             # print("[Agent-Loop]: global_steps",global_steps,step_prompt_length,step_response_length)
         else:
-            step_prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
-            step_response_length = self.config.actor_rollout_ref.rollout.response_length
+            step_prompt_length, step_response_length = valid_prompt_length, valid_response_length
+
+        prompt_ids = output.prompt_ids[-valid_prompt_length:]
+        response_ids = output.response_ids[:valid_response_length]
+        prompt_mask = output.prompt_mask[-valid_prompt_length:] if output.prompt_mask is not None else None           # 
+        response_mask = output.response_mask[:valid_response_length] if output.response_mask is not None else None
+        response_logprobs = output.response_logprobs[:valid_response_length] if output.response_logprobs is not None else None
+
+
+        if self.config.actor_rollout_ref.rollout.rollout_strategy in ["on_policy_prefix", "on_policy_acc_prefix"] and not validate:
+            prefix_length = min(int(len(response_ids) * prefix_ratio), len(response_ids)-1)   # ensure at least 1 token for suffix response
+            prompt_length = len(prompt_ids)
+            prefix_prompt_ids = prompt_ids + response_ids[:prefix_length]    # 必定 <= step_prompt_length, 因为len(response_ids) <= valid_response_length
+            suffix_response_ids = response_ids[prefix_length:]               # 必定 <= step_response_length
+            prefix_prompt_mask = [0] * prompt_length + [1] * (len(prefix_prompt_ids) - prompt_length)
+            suffix_response_mask = [1] * len(suffix_response_ids)
+
+        if self.config.actor_rollout_ref.rollout.rollout_strategy == "on_policy_acc_prefix" and not validate:
+            valid_responses = torch.tensor(response_ids).unsqueeze(0)
+            # valid_prompts = torch.tensor(prompt_ids).unsqueeze(0)
+            
+            await self._fast_compute_score(
+                output,
+                valid_responses=valid_responses,
+                kwargs=kwargs,
+            )
+            if output.reward_score ==0:
+                prompt_ids = prefix_prompt_ids
+                response_ids = suffix_response_ids
+                prompt_mask = prefix_prompt_mask
+                response_mask = suffix_response_mask
+            else:
+                prompt_ids = prompt_ids
+                response_ids = response_ids
+                prompt_mask = [0] * prompt_length
+                response_mask = response_mask
+            # print(f"[AgentLoopWorker]: reward_score={output.reward_score}, use_acc_prefix={output.reward_score != 0}")
+        elif self.config.actor_rollout_ref.rollout.rollout_strategy == "on_policy_prefix" and not validate:
+            prompt_ids = prefix_prompt_ids
+            response_ids = suffix_response_ids
+            prompt_mask = prefix_prompt_mask
+            response_mask = suffix_response_mask
+        
 
         self.tokenizer.padding_side = "left"
         prompt_output = self.tokenizer.pad(
-            {"input_ids": output.prompt_ids[-step_prompt_length:]},
+            {"input_ids": prompt_ids[-step_prompt_length:]},
             padding="max_length",
             max_length=step_prompt_length,
             return_tensors="pt",
@@ -561,10 +604,10 @@ class AgentLoopWorker:
             prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
             prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
         
-        prompt_mask = None
-        if output.prompt_mask is not None:
+        # prompt_mask = None
+        if prompt_mask is not None:
             prompt_mask_output = self.tokenizer.pad(
-                {"input_ids": output.prompt_mask[-step_prompt_length:]},
+                {"input_ids": prompt_mask[-step_prompt_length:]},
                 padding="max_length",
                 max_length=step_prompt_length,
                 return_tensors="pt",
@@ -576,18 +619,19 @@ class AgentLoopWorker:
 
         self.tokenizer.padding_side = "right"
         response_output = self.tokenizer.pad(
-            {"input_ids": output.response_ids[:step_response_length]},
+            {"input_ids": response_ids[:step_response_length]},
             padding="max_length",
             max_length=step_response_length,
             return_tensors="pt",
             return_attention_mask=True,
         )
+        # print("[Check] response_output:",response_output["input_ids"],response_ids)
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
             response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
 
         response_mask_output = self.tokenizer.pad(
-            {"input_ids": output.response_mask[:step_response_length]},
+            {"input_ids": response_mask[:step_response_length]},
             padding="max_length",
             max_length=step_response_length,
             return_tensors="pt",
@@ -598,10 +642,10 @@ class AgentLoopWorker:
 
         # print("[Check]:",prompt_output["input_ids"].shape, prompt_mask_output["input_ids"].shape, response_output["input_ids"].shape, response_mask_output["input_ids"].shape)
 
-        response_logprobs = None
+        # response_logprobs = None
         if output.response_logprobs is not None:
-            pad_size = step_response_length - len(output.response_logprobs)
-            response_logprobs = torch.tensor(output.response_logprobs + [0.0] * pad_size).unsqueeze(0)
+            pad_size = step_response_length - len(response_logprobs)
+            response_logprobs = torch.tensor(response_logprobs + [0.0] * pad_size).unsqueeze(0)
 
         response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
         attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
@@ -661,7 +705,7 @@ class AgentLoopWorker:
             extra_fields=output.extra_fields,
         )
 
-    # def _curriculum_params(self, global_steps: int) -> float:
+    # def _prefix_curriculum(self, global_steps: int) -> float:
     #     # 每次读取 proxy，而不是在 __init__ 时复制到本地
     #     self.max_model_len = self.config.actor_rollout_ref.rollout.max_model_len or self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length
 
@@ -683,30 +727,30 @@ class AgentLoopWorker:
 
     #     return step_prompt_length, step_response_length
     
-    def _curriculum_params(self, global_steps: int) -> float:
+    def _prefix_curriculum(self, global_steps: int) -> float:
         # 每次读取 proxy，而不是在 __init__ 时复制到本地
         self.max_model_len = self.config.actor_rollout_ref.rollout.max_model_len or self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length
 
-        def linear_ratio(epoch: int, max_response_ratio: float, max_curriculum_epoch: int, min_curriculum_epoch: int = 0) -> float:
+        def linear_ratio(epoch: int, max_prefix_ratio: float, max_prefix_epoch: int, min_prefix_epoch: int = 0) -> float:
             """
             linear schedule:
-            - epoch = 0             → ratio = max_response_ratio
-            - epoch >= max_curriculum_epoch    → ratio = 1.0
-            - 0 < epoch < end_ep    → ratio = linear between max_response_ratio and 1.0
+            - epoch = 0             → ratio = max_prefix_ratio
+            - epoch >= max_prefix_epoch    → ratio = 1.0
+            - 0 < epoch < end_ep    → ratio = linear between max_prefix_ratio and 1.0
             """
-            if min_curriculum_epoch ==0:
-                return max_response_ratio - max_response_ratio * (min(epoch / max_curriculum_epoch, 1))
+            if min_prefix_epoch ==0:
+                return max_prefix_ratio - max_prefix_ratio * (min(epoch / max_prefix_epoch, 1))
             else:
-                return max_response_ratio - max_response_ratio * (min(max(epoch-min_curriculum_epoch,1) / max_curriculum_epoch, 1))
+                return max_prefix_ratio - max_prefix_ratio * (min(max(epoch-min_prefix_epoch,1) / max_prefix_epoch, 1))
 
-        progress_ratio = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_response_ratio, self.config.actor_rollout_ref.rollout.max_curriculum_epoch, self.config.actor_rollout_ref.rollout.min_curriculum_epoch)
-        step_prompt_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * progress_ratio)
+        prefix_ratio = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_prefix_ratio, self.config.actor_rollout_ref.rollout.max_prefix_epoch, self.config.actor_rollout_ref.rollout.min_prefix_epoch)
+        step_prompt_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * prefix_ratio)
 
-        progress_ratio_raw = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_response_ratio, self.config.actor_rollout_ref.rollout.max_curriculum_epoch)
-        step_prompt_raw_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * progress_ratio_raw)
+        prefix_ratio_raw = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_prefix_ratio, self.config.actor_rollout_ref.rollout.max_prefix_epoch)
+        step_prompt_raw_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * prefix_ratio_raw)
         step_response_length = self.max_model_len - step_prompt_raw_length
 
-        return step_prompt_length, step_response_length
+        return step_prompt_length, step_response_length, prefix_ratio
 
     def _compute_multi_modal_inputs(self, output, input_ids) -> dict[str, torch.Tensor]:
         """Compute multi-modal inputs with image and video."""
@@ -779,6 +823,34 @@ class AgentLoopWorker:
                     "attention_mask": attention_mask,  # [1, prompt_length + response_length]
                     "input_ids": input_ids,  # [1, prompt_length + response_length]
                     "position_ids": position_ids,
+                },
+                batch_size=1,
+            )
+            non_tensor_batch = {
+                **{k: np.array([v]) for k, v in kwargs.items()},
+                "__num_turns__": np.array([output.num_turns]),
+                "tool_extra_fields": np.array([output.extra_fields], dtype=object),
+            }
+
+            data = DataProto(
+                batch=batch,
+                non_tensor_batch=non_tensor_batch,
+            )
+            selected_reward_loop_worker_handle = random.choice(self.reward_loop_worker_handles)
+            result = await selected_reward_loop_worker_handle.compute_score.remote(data)
+            output.reward_score = result["reward_score"]
+            output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
+    
+    async def _fast_compute_score(self, output, valid_responses, kwargs):
+        """Compute reward score for single sample."""
+        enable_async_reward = self.reward_loop_worker_handles is not None
+
+        if output.reward_score is None and enable_async_reward:
+            assert self.config.reward_manager.name == "fastnaive", "Only FastNaiveRewardManager supports fast_compute_score, currently configured reward manager: {}".format(self.config.reward_manager.name)
+            batch = TensorDict(
+                {
+                    # "prompts": valid_prompts,  # [1, prompt_length]
+                    "responses": valid_responses,  # [1, response_length]
                 },
                 batch_size=1,
             )

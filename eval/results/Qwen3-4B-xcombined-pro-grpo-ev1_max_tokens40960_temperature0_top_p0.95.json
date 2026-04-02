@@ -1,0 +1,31 @@
+{
+    "exp_name": "Qwen3-4B-xcombined-pro-grpo-ev1",
+    "model_name": "/mnt/public/users/zhangjinghao/code/verl/result/LM/qwen3_4b/xcombined-pro-grpo/global_step_234/hf",
+    "template": "qwen_math_box",
+    "temperature": 0,
+    "top_p": 0.95,
+    "max_tokens": 40960,
+    "n_samples": 1,
+    "eval_type": "pass@k",
+    "tasks": [
+        "aime",
+        "aime25"
+    ],
+    "results": {
+        "aime": 0.7666666666666667,
+        "aime25": 0.6
+    },
+    "avg": 0.6833333333333333,
+    "avg_lens": {
+        "aime": 17418.133333333335,
+        "aime25": 21945.5
+    },
+    "max_lens": {
+        "aime": 40870.0,
+        "aime25": 40813.0
+    },
+    "formatted": {
+        "aime": 0.9,
+        "aime25": 0.8333333333333334
+    }
+}

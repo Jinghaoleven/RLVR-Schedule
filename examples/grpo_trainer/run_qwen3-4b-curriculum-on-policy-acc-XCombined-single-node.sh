@@ -3,8 +3,8 @@
 
 set -x
 ROOT_DIR=/mnt/public/users/zhangjinghao
-project_name=qwen3_4b
-experiment_name=xcombined-pro-grpo-v2.6
+project_name=qwen3_4b_new
+experiment_name=xcombined-pro-on-policy-acc-grpo
 
 # export CUDA_VISIBLE_DEVICES=0,1,2,3
 export WORKING_DIR=/mnt/public/users/zhangjinghao/code/verl
@@ -22,30 +22,30 @@ export NCCL_IB_QPS_PER_CONNECTION=8
 
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
-ray stop
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files=$WORKING_DIR/dataset/train/XCombined/train.parquet \
     data.val_files=$WORKING_DIR/dataset/train/MATH-lighteval/test.parquet \
-    data.train_batch_size=256 \
+    data.train_batch_size=16 \
     data.max_prompt_length=1024 \
     data.max_response_length=39936 \
     data.filter_overlong_prompts=True \
     data.truncation='right' \
     data.response_key=solution \
-    data.trust_response=curriculum \
-    data.max_response_ratio=0.99 \
-    data.min_curriculum_epoch=16 \
-    data.max_curriculum_epoch=130 \
-    reward_model.use_reward_loop=False \
-    actor_rollout_ref.model.path=$ROOT_DIR/models/Qwen3-4B \
+    data.rollout_strategy=on_policy_acc_prefix \
+    data.max_prefix_ratio=0.99 \
+    data.min_prefix_epoch=16 \
+    data.max_prefix_epoch=130 \
+    reward_model.reward_manager=fastnaive \
+    reward_manager.name=fastnaive \
+    actor_rollout_ref.model.path=$ROOT_DIR/models/Qwen3-1.7B \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=256 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0 \
-    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.actor.kl_loss_type=k1 \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
@@ -54,7 +54,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.max_num_batched_tokens=40960 \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=2 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
@@ -63,7 +63,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.top_k=-1 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.n=8 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.nccl_timeout=3600 \
     algorithm.use_kl_in_reward=False \
@@ -73,7 +73,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name=$experiment_name \
     trainer.default_local_dir=$WORKING_DIR/result/LM/$project_name/$experiment_name \
     trainer.val_before_train=False \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=25 \
     trainer.test_freq=300 \

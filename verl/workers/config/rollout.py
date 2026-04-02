@@ -153,10 +153,10 @@ class RolloutConfig(BaseConfig):
     prompt_length: int = 512
     response_length: int = 512
 
-    max_response_ratio: Optional[float] = None
-    max_curriculum_epoch: Optional[int] = None
-    min_curriculum_epoch: Optional[int] = 0
-    response_mode: Optional[str] = None
+    max_prefix_ratio: Optional[float] = None
+    max_prefix_epoch: Optional[int] = None
+    min_prefix_epoch: Optional[int] = 0
+    rollout_strategy: Optional[str] = None
 
     dtype: str = "bfloat16"
     gpu_memory_utilization: float = 0.5

@@ -39,12 +39,13 @@ if __name__ == "__main__":
 
     # 'lighteval/MATH' is no longer available on huggingface.
     # Use mirror repo: DigitalLearningGmbH/MATH-lighteval
-    data_source = "BytedTsinghua-SIA/DAPO-Math-17k"
+    data_source = "nvidia/Nemotron-SFT-Math-v3"
     print(f"Loading the {data_source} dataset from huggingface...", flush=True)
     if local_dataset_path is not None:
-        dataset = datasets.load_dataset(
-            local_dataset_path,
-        )
+        # dataset = datasets.load_dataset(
+        #     local_dataset_path,
+        # )
+        dataset = datasets.load_dataset("json", data_files=local_dataset_path)
     else:
         dataset = datasets.load_dataset(
             data_source,
@@ -59,11 +60,15 @@ if __name__ == "__main__":
     # add a row to each data item that represents a unique id
     def make_map_fn(split):
         def process_fn(example, idx):
-            question = example.pop("prompt")[0]["content"]
-            question = question.split("where $Answer is the answer to the problem.\n\n")[1].split("\n\nRemember to put your answer")[0]
+            question = example.pop("problem")
+
             prompt = question + " " + instruction_following
 
-            answer = example.pop("reward_model")["ground_truth"]
+            answer = example.pop("expected_answer")
+            messages = example.pop("messages")
+            tools = example.pop("tools")
+            uuid = example.pop("uuid")
+
             data = {
                 "data_source": data_source,
                 "prompt": [{"role": "user", "content": prompt}],
@@ -72,14 +77,20 @@ if __name__ == "__main__":
                 "extra_info": {
                     "split": split, 
                     "index": idx,
-                    "question": prompt,
-                    "answer": answer},
+                    "question": question,
+                    "answer": answer,
+                    "messages": messages,
+                    "tools": tools,
+                    "uuid": uuid
+                },
             }
             return data
 
         return process_fn
 
+    # import pdb; pdb.set_trace()
     train_dataset = train_dataset.map(function=make_map_fn("train"), with_indices=True)
+    # import pdb; pdb.set_trace()
     # test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
 
     train_dataset.to_parquet(os.path.join(args.local_save_dir, "train.parquet"))

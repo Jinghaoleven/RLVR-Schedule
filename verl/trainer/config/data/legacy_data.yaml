@@ -32,10 +32,10 @@ response_key: answer
 # The field used to select the reward function (if using different ones per example).
 reward_fn_key: data_source
 
-trust_response: null # curriculum, batch_random
-max_response_ratio: null
-max_curriculum_epoch: null
-min_curriculum_epoch: 0
+rollout_strategy: null # prefix, batch_random
+max_prefix_ratio: null
+max_prefix_epoch: null
+min_prefix_epoch: 0
 
 # Maximum prompt length. All prompts will be left-padded to this length.
 # An error will be reported if the length is too long.

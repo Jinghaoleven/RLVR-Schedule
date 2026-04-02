@@ -272,6 +272,7 @@ def main(
     model_name: str = "Qwen/Qwen2.5-Math-1.5B",
     tasks: list = ["aime", "aime25", "amc", "math", "minerva", "olympiad_bench"],
     # tasks: list = ["aime", "aime25", "amc", "math", "olympiad_bench"],
+    # tasks: list = ["aime", "aime25"],
     # tasks: list = ["aime", "aime25", "amc", "math"],
     # tasks: list = ["aime"],
     # tasks: list = ["minerva", "olympiad_bench"],

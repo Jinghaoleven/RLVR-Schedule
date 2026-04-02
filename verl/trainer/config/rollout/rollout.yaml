@@ -24,10 +24,10 @@ prompt_length: ${oc.select:data.max_prompt_length,512}
 # same as data.max_response_length if it exists
 response_length: ${oc.select:data.max_response_length,512}
 
-max_response_ratio: ${oc.select:data.max_response_ratio,null}
-max_curriculum_epoch: ${oc.select:data.max_curriculum_epoch,null}
-min_curriculum_epoch: ${oc.select:data.min_curriculum_epoch,0}
-response_mode: ${oc.select:data.trust_response,null}
+max_prefix_ratio: ${oc.select:data.max_prefix_ratio,null}
+max_prefix_epoch: ${oc.select:data.max_prefix_epoch,null}
+min_prefix_epoch: ${oc.select:data.min_prefix_epoch,0}
+rollout_strategy: ${oc.select:data.rollout_strategy,null}
 
 # for vllm rollout
 # Rollout model parameters type. Align with actor model's FSDP/Megatron type.

@@ -404,30 +404,16 @@ def create_rl_dataset(data_paths, data_config, default_local_dir, tokenizer, pro
 
         dataset_cls = DynamicGenDataset
         print("Using DynamicGenDataset for data generation.")
-    elif data_config.trust_response is not None and is_train:
-        curriculum_config = None
-        if data_config.trust_response == "curriculum":
-
-            checkpoint_folder = default_local_dir  # TODO: check path
-            if not os.path.isabs(checkpoint_folder):
-                working_dir = os.getcwd()
-                checkpoint_folder = os.path.join(working_dir, checkpoint_folder)
-            global_step_folder = find_latest_ckpt_path(checkpoint_folder)  # None if no latest
-            if global_step_folder is None:
-                global_steps = 0
-            else:
-                global_steps = int(global_step_folder.split("global_step_")[-1])
-
-            from multiprocessing import Manager
-
-            curriculum_config = Manager().dict()
-            curriculum_config.update({"epoch": 0, "step":global_steps})
-
-        dataset_cls = RLHFProDataset
+    elif data_config.rollout_strategy is not None and is_train:
+        # curriculum_config = None
+        if data_config.rollout_strategy in ["prefix",]:
+            dataset_cls = RLHFProDataset
+        else:
+            dataset_cls = RLHFDataset
     else:
         # Use the default RLHFDataset class if no custom class is specified
         dataset_cls = RLHFDataset
-    print(f"Using dataset class: {dataset_cls.__name__}")
+    print(f"Rollout strategy {data_config.rollout_strategy} || Using dataset class: {dataset_cls.__name__}.")
 
     # Instantiate the dataset using the determined dataset class
     dataset = build_dataset(
@@ -436,8 +422,7 @@ def create_rl_dataset(data_paths, data_config, default_local_dir, tokenizer, pro
         tokenizer=tokenizer,
         processor=processor,
         config=data_config,
-        max_samples=max_samples,
-        curriculum_config=curriculum_config if dataset_cls is RLHFProDataset else None,  # 若类不支持会自动忽略
+        max_samples=max_samples
     )
 
     return dataset
