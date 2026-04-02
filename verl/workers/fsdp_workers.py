@@ -28,11 +28,14 @@ import torch.distributed
 import torch.distributed as dist
 from codetiming import Timer
 from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf.errors import ConfigAttributeError
 from peft import LoraConfig, TaskType, get_peft_model
 from safetensors.torch import save_file
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.api import FullStateDictConfig, ShardedStateDictConfig, StateDictType
+
+from verl.utils.import_utils import deprecated
 
 try:
     # for torch 2.5+
@@ -62,6 +65,7 @@ from verl.utils.fsdp_utils import (
     MixedPrecisionPolicy,
     apply_fsdp2,
     collect_lora_params,
+    collect_merged_lora_params,
     fsdp2_load_full_state_dict,
     fsdp_version,
     get_fsdp_wrap_policy,
@@ -81,7 +85,11 @@ from verl.utils.model import convert_weight_keys
 from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerConfig, log_gpu_memory_usage, simple_timer
 from verl.utils.profiler.performance import reduce_timing, topk_reduce_ratio_min_max
 from verl.utils.py_functional import convert_to_regular_types
+
+# QAT support
+from verl.utils.qat import apply_qat, enable_qat_fuse
 from verl.utils.ray_utils import get_event_loop
+from verl.utils.transformers_compat import get_auto_model_for_vision2seq
 from verl.workers.config import FSDPCriticConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
 from verl.workers.config.optimizer import build_optimizer
 from verl.workers.rollout import get_rollout_class
@@ -135,6 +143,7 @@ def get_vl_model_vision_tower(vl_model_instance):
     return None
 
 
+@deprecated("legacy worker implementation is deprecated and will be removed in v0.8.0")
 class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     """
     This worker can be instantiated as a standalone actor or a standalone rollout or a standalone reference policy
@@ -157,6 +166,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 timeout=datetime.timedelta(seconds=self.config.get("nccl_timeout", 600)),
                 init_method=os.environ.get("DIST_INIT_METHOD", None),
             )
+
+        # Apply NPU patches for FSDP backend
+        from verl.workers.engine.fsdp.utils import apply_npu_fsdp_patches
+
+        apply_npu_fsdp_patches()
 
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()
@@ -270,6 +284,52 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             self.config.ref.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
             self.config.ref.log_prob_micro_batch_size_per_gpu = self.config.ref.log_prob_micro_batch_size
 
+    def _init_qat_config(self):
+        """Initialize QAT configuration from actor.qat."""
+        try:
+            self.qat_config = self.config.actor.qat
+            self._qat_enabled = self.qat_config.enable
+            if self._qat_enabled:
+                logger.info(
+                    f"QAT enabled: mode={self.qat_config.mode}, config_path={self.qat_config.quantization_config_path}"
+                )
+        except (AttributeError, KeyError, ConfigAttributeError):
+            # QAT config not provided, disable QAT
+            self._qat_enabled = False
+            self.qat_config = None
+
+    def _restore_w4a4_input_scales(self, model, model_path):
+        """Restore input_global_scale and input_amax from checkpoint for W4A4 mode."""
+        import glob
+
+        from safetensors import safe_open
+
+        safetensor_files = glob.glob(f"{model_path}/model*.safetensors")
+        loaded_count = 0
+
+        for sf_path in safetensor_files:
+            with safe_open(sf_path, framework="pt") as f:
+                for key in f.keys():
+                    if "input_global_scale" in key:
+                        module_path = key.replace(".input_global_scale", "")
+                        amax_key = f"{module_path}.input_amax"
+
+                        module = model
+                        for part in module_path.split("."):
+                            module = getattr(module, part)
+
+                        scale_val = f.get_tensor(key)
+                        val = scale_val.item() if scale_val.numel() == 1 else scale_val.max().item()
+                        module.input_global_scale.fill_(val)
+
+                        amax_val = f.get_tensor(amax_key)
+                        amax = amax_val.item() if amax_val.numel() == 1 else amax_val.max().item()
+                        module.input_amax.fill_(amax)
+                        loaded_count += 1
+
+        if self.rank == 0:
+            logger.info(f"[W4A4] Loaded {loaded_count} input scales from checkpoint")
+
     def _build_model_optimizer(
         self,
         model_path,
@@ -292,12 +352,21 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             AutoConfig,
             AutoModel,
             AutoModelForCausalLM,
-            AutoModelForImageTextToText,
-            AutoModelForVision2Seq,
         )
+
+        try:
+            from transformers import AutoModelForVision2Seq
+        except ImportError:
+            AutoModelForVision2Seq = None
+        try:
+            from transformers import AutoModelForImageTextToText
+        except ImportError:
+            AutoModelForImageTextToText = AutoModelForVision2Seq
 
         from verl.utils.model import get_generation_config, print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
+
+        AutoModelForVision2Seq = get_auto_model_for_vision2seq()
 
         assert role in ["actor", "ref"]
 
@@ -409,11 +478,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 attn_implementation=attn_implementation,
             )
 
-            # Apply Liger kernel to the model if use_liger is set to True
+            # Apply Liger kernel; disable fused_linear_cross_entropy (conflicts with verl's forward patching)
             if use_liger:
                 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 
-                _apply_liger_kernel_to_instance(model=actor_module)
+                _apply_liger_kernel_to_instance(
+                    model=actor_module,
+                    fused_linear_cross_entropy=False,
+                    swiglu=True,
+                )
 
             fused_kernel_options = self.config.model.get("fused_kernel_options", None)
             fused_kernels_backend = (
@@ -480,6 +553,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 if self.rank == 0:
                     print("[actor model] No vision tower found.")
 
+        # Apply QAT before FSDP wrapping (actor only)
+        if role == "actor" and self._qat_enabled:
+            actor_module = apply_qat(actor_module, self.qat_config)
+            enable_qat_fuse(actor_module)
+            if self.qat_config.mode == "w4a4":
+                self._restore_w4a4_input_scales(actor_module, self.config.model.path)
+
         torch.distributed.barrier()
 
         if self.rank == 0:
@@ -499,6 +579,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             buffer_dtype = torch.float32
 
         mixed_precision = MixedPrecision(param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype)
+
+        # Store param_dtype for QAT quantizer
+        self._param_dtype = param_dtype
 
         auto_wrap_policy = get_fsdp_wrap_policy(
             module=actor_module,
@@ -666,6 +749,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # used for LoRA
         self.base_sync_done: bool = "dummy" not in self.config.rollout.load_format
         self.layered_summon = self.config.rollout.get("layered_summon", False)
+        self.peft_merge: bool = model_config.lora.get("merge", False)
 
         # 5. switch to trainer mode
         # NOTE: It's critical that hybrid engine in trainer mode initially to load checkpoint.
@@ -685,13 +769,23 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         peft_model = getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
         if hasattr(peft_model, "peft_config"):  # LoRA
             peft_config = peft_model.peft_config.get("default", None)
-            params = collect_lora_params(
-                module=self.actor_module_fsdp,
-                layered_summon=self.config.rollout.get("layered_summon", False),
-                base_sync_done=self.base_sync_done,
-            )
-            if not self.base_sync_done:
-                params = {replace_lora_wrapper(k, peft_config): v for k, v in params.items()}
+            if self.peft_merge:
+                # Merge LoRA into base weights and extract with HF key names.
+                # Required for backends (e.g. SGLang) whose load_weights() expects
+                # standard HF param names and can't handle LoRA delta keys.
+                params = collect_merged_lora_params(module=self.actor_module_fsdp)
+                # Full merged weights, not LoRA deltas — clear peft_config so
+                # downstream update_weights treats these as plain HF params.
+                peft_config = None
+                self.base_sync_done = True
+            else:
+                params = collect_lora_params(
+                    module=self.actor_module_fsdp,
+                    layered_summon=self.config.rollout.get("layered_summon", False),
+                    base_sync_done=self.base_sync_done,
+                )
+                if not self.base_sync_done:
+                    params = {replace_lora_wrapper(k, peft_config): v for k, v in params.items()}
         else:
             params = self.actor_module_fsdp.state_dict()
 
@@ -703,7 +797,14 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # When sleep_level=2, base model weights are destroyed during each sleep cycle.
         # separately collect and update LoRA weights and base model weights through their respective interfaces.
         # Here: params contains LoRA weights, base_model_params contains base model weights.
-        if peft_config is not None and getattr(self.rollout, "sleep_level", None) == 2:
+        # Only needed if the rollout engine actually sleeps/frees weights (free_cache_engine=True).
+        # Skip when peft_merge=True: params already contains full merged weights.
+        if (
+            peft_config is not None
+            and getattr(self.rollout, "sleep_level", None) == 2
+            and self.config.rollout.free_cache_engine
+            and not self.peft_merge
+        ):
             base_model_params = collect_lora_params(
                 module=self.actor_module_fsdp,
                 layered_summon=self.layered_summon,
@@ -721,20 +822,50 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         set_expandable_segments(False)
 
-        if peft_config is not None and self.base_sync_done:
-            per_tensor_param = params.items() if isinstance(params, dict) else params  # Fixed: handle dict case
-        else:
-            device = get_device_id()  # used when fsdp2 set cpu_offload_policy
-            per_tensor_param = (
-                (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
-                for name, param in params.items()
+        # Ensure all params are on GPU before sending to rollout engine.
+        # collect_lora_params returns CPU tensors via .detach().cpu(), so the
+        # previous base_sync_done fast-path silently passed CPU tensors through,
+        # which could cause errors in backends that expect GPU tensors (e.g.
+        # SGLang's CUDA IPC serializer).
+        device = get_device_id()
+        _items = params.items() if isinstance(params, dict) else params
+        per_tensor_param = (
+            (
+                name,
+                param.to(device, non_blocking=True).full_tensor()
+                if isinstance(param, DTensor)
+                else param.to(device, non_blocking=False),
             )
+            for name, param in _items
+        )
+
+        # QAT: quantize weights before sending to vLLM
+        if self._qat_enabled:
+            from verl.utils.qat.quantizer import QATQuantizer
+
+            quantizer = QATQuantizer(
+                mode=self.qat_config.mode,
+                group_size=self.qat_config.group_size,
+                ignore_patterns=self.qat_config.ignore_patterns,
+                device=torch.device(get_device_id()),
+                param_dtype=self._param_dtype,
+            )
+            per_tensor_param = quantizer.quantize_with_fusion(
+                per_tensor_param,
+                target_device=torch.device("cpu"),
+            )
+            aggressive_empty_cache(force_sync=True)
 
         if self.config.rollout.free_cache_engine:
             await self.rollout.resume(tags=["weights"])
         log_gpu_memory_usage("After resume weights", logger=logger)
 
-        if peft_config is not None and getattr(self.rollout, "sleep_level", None) == 2:
+        if (
+            peft_config is not None
+            and getattr(self.rollout, "sleep_level", None) == 2
+            and self.config.rollout.free_cache_engine
+            and not self.peft_merge
+        ):
             per_tensor_base_params = (
                 (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
                 for name, param in base_model_params.items()
@@ -759,6 +890,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get("external_lib", None))
+
+        # Initialize QAT config before _build_model_optimizer
+        self._init_qat_config()
 
         override_model_config = OmegaConf.to_container(OmegaConf.create(self.config.model.get("override_config", {})))
         use_remove_padding = self.config.model.get("use_remove_padding", False)
@@ -871,6 +1005,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 lr_scheduler=self.actor_lr_scheduler,
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_config=self.config.actor.checkpoint,
+                trust_remote_code=self.config.model.get("trust_remote_code", False),
             )
 
         if not self._is_actor and self._is_rollout:
@@ -885,6 +1020,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_config=checkpoint_contents,
             )
+
+        # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
+        aggressive_empty_cache(force_sync=True)
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
@@ -1171,6 +1309,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 pass
 
 
+@deprecated("legacy worker implementation is deprecated and will be removed in v0.8.0")
 class CriticWorker(Worker, DistProfilerExtension):
     def __init__(self, config: FSDPCriticConfig):
         Worker.__init__(self)
@@ -1253,7 +1392,7 @@ class CriticWorker(Worker, DistProfilerExtension):
         )
         self.use_orig_params = self.config.model.fsdp_config.get("use_orig_params", False)
 
-    def _build_critic_model_optimizer(self, config):
+    def _build_critic_model_optimizer(self, config: FSDPCriticConfig):
         # the following line is necessary
         from torch.distributed.fsdp import MixedPrecision
 
@@ -1531,6 +1670,7 @@ class CriticWorker(Worker, DistProfilerExtension):
             lr_scheduler=self.critic_lr_scheduler,
             processing_class=self.processor if self.processor is not None else self.tokenizer,
             checkpoint_config=self.config.checkpoint,
+            trust_remote_code=self.config.model.get("trust_remote_code", False),
         )
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="critic"))
@@ -1623,6 +1763,6 @@ class CriticWorker(Worker, DistProfilerExtension):
 # ================================= Async related workers =================================
 class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
-    async def update_weights(self):
+    async def update_weights(self, global_steps: int = None):
         await self.rollout_mode()
         return True

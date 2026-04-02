@@ -52,6 +52,7 @@ from verl.utils.device import (
 from verl.utils.distributed import set_numa_affinity
 from verl.utils.flops_counter import FlopsCounter
 from verl.utils.fs import copy_to_local
+from verl.utils.import_utils import deprecated
 from verl.utils.megatron.router_replay_patch import RouterReplay, RouterReplayAction, apply_router_replay_patch
 from verl.utils.megatron_peft_utils import add_base_layer_suffix, build_peft_config_for_vllm
 from verl.utils.megatron_utils import (
@@ -103,6 +104,7 @@ def set_random_seed(seed, only_rollout=False):
     # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
 
+@deprecated("legacy worker implementation is deprecated and will be removed in v0.8.0")
 class MegatronWorker(Worker):
     def _init_hf_config_and_tf_config(
         self,
@@ -155,7 +157,6 @@ class MegatronWorker(Worker):
         if enable_mtp:
             assert hf_config.num_nextn_predict_layers > 0, "MTP requires at least one nextn_predict_layer"
             assert megatron_config.use_mbridge, "MTP requires use_mbridge to be True"
-            assert megatron_config.vanilla_mbridge, "MTP requires vanilla_mbridge to be True"
             override_transformer_config["mtp_loss_scaling_factor"] = self.config.model.mtp.mtp_loss_scaling_factor
         else:
             if hasattr(hf_config, "num_nextn_predict_layers"):
@@ -199,6 +200,10 @@ class MegatronWorker(Worker):
                 # In case of invalid overrides, we need to make sure some critical params are set correctly
                 provider.params_dtype = dtype
 
+                # Ensure dtype settings propagate to Megatron-Bridge/TE
+                provider.fp16 = fp16
+                provider.bf16 = bf16
+
                 # Pass distributed info
                 provider.tensor_model_parallel_size = megatron_config.tensor_model_parallel_size
                 provider.pipeline_model_parallel_size = megatron_config.pipeline_model_parallel_size
@@ -215,6 +220,12 @@ class MegatronWorker(Worker):
                 provider.variable_seq_lengths = True
                 provider.moe_token_dispatcher_type = "alltoall"
                 provider.moe_router_load_balancing_type = "none"
+
+                qat_enabled = getattr(self.config, "actor", {}).get("qat", {}).get("enable", False)
+                if qat_enabled:
+                    from verl.utils.modelopt import patch_provider_for_qat
+
+                    patch_provider_for_qat(provider)
 
                 # Apply transformer config overrides
                 for key, value in override_transformer_config.items():
@@ -234,6 +245,16 @@ class MegatronWorker(Worker):
         self.hf_config = hf_config
         self.tf_config = tf_config
 
+        actor_config = getattr(self.config, "actor", None)
+        qat_enabled = actor_config.get("qat", {}).get("enable", False) if actor_config is not None else False
+        if qat_enabled:
+            if not self.bridge or self.vanilla_bridge:
+                raise ValueError(
+                    "QAT (Quantization-Aware Training) requires Megatron bridge. "
+                    "Please ensure 'actor.megatron.use_mbridge' is set to True and "
+                    "'actor.megatron.vanilla_mbridge' is set to False in your configuration."
+                )
+
         # Get PEFT config from model.lora if specified
         from verl.workers.config.megatron_peft import get_peft_cls
 
@@ -242,6 +263,7 @@ class MegatronWorker(Worker):
         )
 
 
+@deprecated("legacy worker implementation is deprecated and will be removed in v0.8.0")
 class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
     """
     This worker can be instantiated as a standalone actor or a standalone rollout or a standalone reference policy
@@ -440,6 +462,11 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             if self.rank == 0:
                 print_model_size(actor_module[0])
             log_gpu_memory_usage("After MegatronPPOActor init", logger=logger)
+            qat_config = self.config.actor.get("qat", {})
+            if qat_config.get("enable", False):
+                from verl.utils.modelopt import apply_qat_to_modules
+
+                actor_module = apply_qat_to_modules(actor_module, qat_config)
         elif self._is_ref:
             wrap_config = McoreModuleWrapperConfig(
                 is_value_model=False,  # ref is not value model
@@ -670,7 +697,8 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             if not self.config.actor.megatron.use_mbridge:
                 self.weight_converter = get_mcore_weight_converter(self.actor_model_config, self.dtype)
 
-        get_torch_device().empty_cache()
+        # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
+        aggressive_empty_cache(force_sync=True)
         log_gpu_memory_usage("After init_model finish", logger=logger)
 
     async def rollout_mode(self):
@@ -692,7 +720,9 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             # main memory can trade sync time to avoid OOM
             self.rollout.sleep_level = 1
 
-            do_lora_base_sync = not self.base_sync_done or self.rollout.sleep_level != 1
+            do_lora_base_sync = (not self.base_sync_done) or (
+                self.rollout.sleep_level != 1 and self.config.rollout.free_cache_engine
+            )
 
         if self.bridge is not None:
             if self.vanilla_bridge:
@@ -710,6 +740,12 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
                 self.tf_config,
                 self.layer_name_mapping,
             )
+        qat_config = self.config.actor.get("qat", {})
+        if qat_config.get("enable", False):
+            from verl.utils.modelopt import export_qat_weights
+
+            qat_mode = qat_config.get("mode", "w4a16")
+            per_tensor_param = export_qat_weights(per_tensor_param, self.actor.actor_module, qat_mode, self.bridge)
 
         if self.config.rollout.free_cache_engine:
             await self.rollout.resume(tags=["weights"])
@@ -979,7 +1015,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
 
 class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
-    async def update_weights(self):
+    async def update_weights(self, global_steps: int = None):
         await self.rollout_mode()
         return True
 
