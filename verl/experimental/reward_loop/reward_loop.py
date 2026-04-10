@@ -259,6 +259,7 @@ class RewardLoopWorker:
                 "use_activation": False,
             }
             output = await self._post_request(payloads, "classify")
+            print(f"disrm output: {output}")
             rm_score = output["data"][-1]["probs"][-1]
         elif engine_name == "sglang":
             payloads = {

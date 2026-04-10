@@ -4,7 +4,7 @@
 set -x
 ROOT_DIR=/mnt/public/users/zhangjinghao
 project_name=qwen3_4b_new
-experiment_name=xcombined-pro-on-policy-acc-grpo
+experiment_name=xcombined-pro-on-policy-acc-grpo-v2
 
 # export CUDA_VISIBLE_DEVICES=0,1,2,3
 export WORKING_DIR=/mnt/public/users/zhangjinghao/code/verl
@@ -53,7 +53,7 @@ else
         --num-gpus=8
 fi
 
-sleep 30
+sleep 50
 if [ "${RANK}" == "0" ]; then
     echo "[INFO] Submitting Ray job..."
     ray job submit --address="http://$MASTER_ADDR:8265" \
@@ -73,8 +73,7 @@ if [ "${RANK}" == "0" ]; then
         data.max_prefix_ratio=0.99 \
         data.min_prefix_epoch=16 \
         data.max_prefix_epoch=130 \
-        reward_model.reward_manager=fastnaive \
-        reward_manager.name=fastnaive \
+        reward.reward_manager.name=fastnaive \
         actor_rollout_ref.model.path=$ROOT_DIR/models/Qwen3-4B \
         actor_rollout_ref.actor.optim.lr=1e-6 \
         actor_rollout_ref.model.use_remove_padding=True \
@@ -91,16 +90,16 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.rollout.max_num_batched_tokens=40960 \
-        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
+        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
         actor_rollout_ref.actor.ulysses_sequence_parallel_size=2 \
         actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
         actor_rollout_ref.rollout.name=vllm \
-        actor_rollout_ref.rollout.temperature=1.4 \
+        actor_rollout_ref.rollout.temperature=1.2 \
         actor_rollout_ref.rollout.top_p=1.0 \
         actor_rollout_ref.rollout.top_k=-1 \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
         actor_rollout_ref.rollout.n=8 \
-        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
+        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
         actor_rollout_ref.ref.fsdp_config.param_offload=True \
         actor_rollout_ref.nccl_timeout=3600 \
         algorithm.use_kl_in_reward=False \

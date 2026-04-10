@@ -47,13 +47,13 @@ if [ "${RANK}" == "0" ]; then
 # ================================
 else
     echo "Starting Ray WORKER node..."
-    sleep 10
+    sleep 20
     ray start \
         --address="$MASTER_ADDR:6379" \
         --num-gpus=8
 fi
 
-sleep 20
+sleep 50
 if [ "${RANK}" == "0" ]; then
     echo "[INFO] Submitting Ray job..."
     ray job submit --address="http://$MASTER_ADDR:8265" \
@@ -75,7 +75,7 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.kl_loss_coef=0 \
-        actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+        actor_rollout_ref.actor.kl_loss_type=k1 \
         actor_rollout_ref.actor.entropy_coeff=0 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
@@ -84,18 +84,18 @@ if [ "${RANK}" == "0" ]; then
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.rollout.max_num_batched_tokens=40960 \
-        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=20 \
+        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
         actor_rollout_ref.actor.ulysses_sequence_parallel_size=2 \
         actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
         actor_rollout_ref.rollout.name=vllm \
-        actor_rollout_ref.rollout.temperature=1.4 \
+        actor_rollout_ref.rollout.temperature=1.2 \
         actor_rollout_ref.rollout.top_p=1.0 \
         actor_rollout_ref.rollout.top_k=-1 \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
         actor_rollout_ref.rollout.n=8 \
-        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=20 \
+        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
         actor_rollout_ref.ref.fsdp_config.param_offload=True \
-        actor_rollout_ref.nccl_timeout=1800 \
+        actor_rollout_ref.nccl_timeout=3600 \
         algorithm.use_kl_in_reward=False \
         trainer.critic_warmup=0 \
         trainer.logger='["console","tensorboard"]' \
@@ -106,7 +106,7 @@ if [ "${RANK}" == "0" ]; then
         trainer.n_gpus_per_node=$NPROC_PER_NODE \
         trainer.nnodes=$WORLD_SIZE \
         trainer.save_freq=25 \
-        trainer.test_freq=25 \
+        trainer.test_freq=300 \
         trainer.total_epochs=2 $@
 else
     sleep 10

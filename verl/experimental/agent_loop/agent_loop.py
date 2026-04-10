@@ -882,7 +882,7 @@ class AgentLoopWorker:
         step_prompt_raw_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * prefix_ratio_raw)
         step_response_length = self.max_model_len - step_prompt_raw_length
 
-        return step_prompt_length, step_response_length, prefix_ratio
+        return step_prompt_length, step_response_length, prefix_ratio_raw
 
     def _compute_multi_modal_inputs(self, output, input_ids) -> dict[str, torch.Tensor]:
         """Compute multi-modal inputs with image and video."""
@@ -985,35 +985,7 @@ class AgentLoopWorker:
         enable_async_reward = self.reward_loop_worker_handles is not None
 
         if output.reward_score is None and enable_async_reward:
-            assert self.config.reward_manager.name == "fastnaive", "Only FastNaiveRewardManager supports fast_compute_score, currently configured reward manager: {}".format(self.config.reward_manager.name)
-            batch = TensorDict(
-                {
-                    # "prompts": valid_prompts,  # [1, prompt_length]
-                    "responses": valid_responses,  # [1, response_length]
-                },
-                batch_size=1,
-            )
-            non_tensor_batch = {
-                **{k: np.array([v]) for k, v in kwargs.items()},
-                "__num_turns__": np.array([output.num_turns]),
-                "tool_extra_fields": np.array([output.extra_fields], dtype=object),
-            }
-
-            data = DataProto(
-                batch=batch,
-                non_tensor_batch=non_tensor_batch,
-            )
-            selected_reward_loop_worker_handle = random.choice(self.reward_loop_worker_handles)
-            result = await selected_reward_loop_worker_handle.compute_score.remote(data)
-            output.reward_score = result["reward_score"]
-            output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
-    
-    async def _fast_compute_score(self, output, valid_responses, kwargs):
-        """Compute reward score for single sample."""
-        enable_async_reward = self.reward_loop_worker_handles is not None
-
-        if output.reward_score is None and enable_async_reward:
-            assert self.config.reward_manager.name == "fastnaive", "Only FastNaiveRewardManager supports fast_compute_score, currently configured reward manager: {}".format(self.config.reward_manager.name)
+            assert self.config.reward.reward_manager.name == "fastnaive", "Only FastNaiveRewardManager supports fast_compute_score, currently configured reward manager: {}".format(self.config.reward_manager.name)
             batch = TensorDict(
                 {
                     # "prompts": valid_prompts,  # [1, prompt_length]

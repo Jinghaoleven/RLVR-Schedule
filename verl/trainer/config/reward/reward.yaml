@@ -10,6 +10,8 @@ custom_reward_function:
   path: null
   # The name of the reward function within the specified file. Default is 'compute_score'.
   name: compute_score
+  reward_kwargs:
+    model_name: ${oc.select:reward.reward_model.model_path}
 
 # reward manager, see `verl/trainer/config/reward_manager.yaml` for details.
 reward_manager:
