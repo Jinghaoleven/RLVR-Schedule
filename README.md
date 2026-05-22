@@ -54,7 +54,7 @@ Default to trajectory percentile temporal schedule, run the training scipt.
 bash examples/grpo_trainer/run_schedule_4b.sh
 ```
 
-## Temporal-Schedule arguments
+### Temporal-Schedule arguments
 
 | Argument | Description |
 |---|---|
@@ -62,6 +62,16 @@ bash examples/grpo_trainer/run_schedule_4b.sh
 | `data.min_schedule_ratio` | Schedule start ratio in `[0, 1]` relative to `total_training_steps`. For example, `0.1` starts schedule at `10%` of training. |
 | `data.max_schedule_ratio` | Schedule end ratio in `[0, 1]` relative to `total_training_steps`. For example, `0.8` finishes schedule at `80%` of training. |
 | `data.schedule_mode` | Schedule curve between the resolved start and end steps. Supported values are `linear`, `sigmoid`, and `gamma`. |
+
+### Merge Checkpoints
+
+Training checkpoints are saved in FSDP actor format. Convert checkpoint to standard Hugging Face model directory before running evaluation.
+
+```bash
+MODEL_NAME=checkpoints/experiment_name/global_step_x/actor \
+MERGE_PATH=checkpoints/experiment_name/global_step_x/hf \
+bash scripts/model_merge.sh
+```
 
 ## 🎓 Acknowledgements
 We acknowledge the outstanding open-source contributions from [Verl](https://github.com/verl-project/verl) for building our codebase.
