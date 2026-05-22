@@ -13,14 +13,14 @@
 ## 📜 Brief Introduction
 We introduce the temporal schedule of RLVR and show that *when* learning signals are scheduled can be as important as *where* they are allocated across trajectory tokens, and thus extending existing credit allocation approaches with temporal dimension over the course of RLVR optimization. 
 
-💡 **Continuous Reasoning Enhancement.** Temporal schedule of RLVR shows consistent progress in advancing reasoning capabilities over RLVR with stagnant stagnant credit allocation paradigm, including advantage reweighting and sparse token optimization.
+💡 **Continuous Reasoning Enhancement.** Temporal schedule of RLVR shows consistent progress in advancing reasoning capabilities over RLVR with stagnant credit allocation paradigm, including advantage reweighting and sparse token optimization.
 <div align="center"> <img src="assets/VCurve.png" width = 85% /> </div>
 
 🛠️ **Trajectory Percentile Schedule.** We identify that the simple trajectory percentiles (TP-Schedule) provides a natural perspective in distinguishing heterogeneous policy behaviors, and effectively anchoring the policy entropy in optimizaiton, suggesting a promising credit allocation criteria for temporal scheduling.
 <div align="center"> <img src="assets/stat.png" width = 85% /> </div>
 
-📈 **Temporal Scheduling Analysis.** Temporal scheduling of RLVR show consistent
-<div align="center"> <img src="assets/results.png" width = 85% /> </div>
+<!-- 📈 **Temporal Scheduling Analysis.** Temporal scheduling of RLVR has been validated across credit allocation strategies, RLVR algoorithms, and model sizes. 
+<div align="center"> <img src="assets/results.png" width = 85% /> </div> -->
 
 ## 🔧 Environment Set Up
 1. Clone this repository and navigate to the folder:
