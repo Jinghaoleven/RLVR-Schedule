@@ -498,8 +498,26 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.ref.ppo_max_token_len_per_gpu = self.config.ref.pop("log_prob_max_token_len_per_gpu", None)
             ref_config: ActorConfig = omega_conf_to_dataclass(self.config.ref)
 
+            ref_model_config_omega = deepcopy(self.config.model)
+            ref_model_override = self.config.ref.get("model", None)
+            if ref_model_override is not None:
+                ref_model_path = ref_model_override.get("path", None)
+                if ref_model_path is not None:
+                    with open_dict(ref_model_config_omega):
+                        ref_model_config_omega.path = ref_model_path
+                        if (
+                            getattr(ref_model_config_omega, "hf_config_path", None) is None
+                            or ref_model_config_omega.hf_config_path == self.config.model.path
+                        ):
+                            ref_model_config_omega.hf_config_path = ref_model_path
+                        if (
+                            getattr(ref_model_config_omega, "tokenizer_path", None) is None
+                            or ref_model_config_omega.tokenizer_path == self.config.model.path
+                        ):
+                            ref_model_config_omega.tokenizer_path = ref_model_path
+
             # The ref model does not need to enable MTP; force it to false.
-            ref_config.model_config = deepcopy(model_config)
+            ref_config.model_config = omega_conf_to_dataclass(ref_model_config_omega)
             ref_config.model_config.mtp = MtpConfig(enable=False)
 
             # construct TrainingWorkerConfig

@@ -30,10 +30,12 @@ prompt_length: ${oc.select:data.max_prompt_length,512}
 # same as data.max_response_length if it exists
 response_length: ${oc.select:data.max_response_length,512}
 
-max_prefix_ratio: ${oc.select:data.max_prefix_ratio,null}
-max_prefix_epoch: ${oc.select:data.max_prefix_epoch,null}
-min_prefix_epoch: ${oc.select:data.min_prefix_epoch,0}
-rollout_strategy: ${oc.select:data.rollout_strategy,null}
+initial_schedule_magnitude: ${oc.select:data.initial_schedule_magnitude,null}
+max_schedule_ratio: ${oc.select:data.max_schedule_ratio,null}
+min_schedule_ratio: ${oc.select:data.min_schedule_ratio,0}
+gamma_ratio: ${oc.select:data.gamma_ratio,2.0}
+schedule_strategy: ${oc.select:data.schedule_strategy,null}
+schedule_mode: ${oc.select:data.schedule_mode,null} # linear, sigmoid, gamma
 
 # for vllm rollout
 # Rollout model parameters type. Align with actor model's FSDP/Megatron type.

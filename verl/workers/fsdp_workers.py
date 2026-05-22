@@ -653,33 +653,60 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # TODO: add more optimizer args into config
         if role == "actor" and optim_config is not None:
-            from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
+            from verl.utils.torch_functional import (
+                get_constant_schedule_with_warmup,
+                get_cosine_schedule_with_warmup,
+                get_linear_decay_to_min_schedule,
+            )
 
             actor_optimizer = build_optimizer(actor_module_fsdp.parameters(), optim_config)
 
             total_steps = optim_config.get("total_training_steps", 0)
-            num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
             lr_scheduler_type = optim_config.get("lr_scheduler_type", "constant")
             min_lr_ratio = optim_config.get("min_lr_ratio", 0.0)
             num_cycles = optim_config.get("num_cycles", 0.5)
-            if num_warmup_steps < 0:
-                num_warmup_steps_ratio = optim_config.get("lr_warmup_steps_ratio", 0.0)
-                num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
-
-            if self.rank == 0:
-                print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
+            zero_indexed_step = optim_config.get("zero_indexed_step", True)
 
             if lr_scheduler_type == "constant":
+                num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
+                if num_warmup_steps < 0:
+                    num_warmup_steps_ratio = optim_config.get("lr_warmup_steps_ratio", 0.0)
+                    num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+                if self.rank == 0:
+                    print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
                 actor_lr_scheduler = get_constant_schedule_with_warmup(
                     optimizer=actor_optimizer, num_warmup_steps=num_warmup_steps
                 )
             elif lr_scheduler_type == "cosine":
+                num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
+                if num_warmup_steps < 0:
+                    num_warmup_steps_ratio = optim_config.get("lr_warmup_steps_ratio", 0.0)
+                    num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+                if self.rank == 0:
+                    print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
                 actor_lr_scheduler = get_cosine_schedule_with_warmup(
                     optimizer=actor_optimizer,
                     num_warmup_steps=num_warmup_steps,
                     num_training_steps=total_steps,
                     min_lr_ratio=min_lr_ratio,
                     num_cycles=num_cycles,
+                    zero_indexed_step=zero_indexed_step,
+                )
+            elif lr_scheduler_type == "linear_decay_to_min":
+                lr_decay_steps = optim_config.get("lr_decay_steps", -1)
+                lr_decay_steps_ratio = optim_config.get("lr_decay_steps_ratio", None)
+                if self.rank == 0:
+                    print(
+                        "Total steps: "
+                        f"{total_steps}, lr_decay_steps: {lr_decay_steps}, lr_decay_steps_ratio: {lr_decay_steps_ratio}"
+                    )
+                actor_lr_scheduler = get_linear_decay_to_min_schedule(
+                    optimizer=actor_optimizer,
+                    num_training_steps=total_steps,
+                    min_lr_ratio=min_lr_ratio,
+                    decay_steps=lr_decay_steps,
+                    decay_steps_ratio=lr_decay_steps_ratio,
+                    zero_indexed_step=zero_indexed_step,
                 )
             else:
                 raise NotImplementedError(f"LR scheduler type {lr_scheduler_type} is not supported")
@@ -1610,23 +1637,32 @@ class CriticWorker(Worker, DistProfilerExtension):
         critic_optimizer = build_optimizer(critic_module.parameters(), config.optim)
 
         total_steps = config.optim.get("total_training_steps", 0)
-        num_warmup_steps = int(config.optim.get("lr_warmup_steps", -1))
-
         lr_scheduler_type = config.optim.get("lr_scheduler_type", "constant")
-        if num_warmup_steps < 0:
-            num_warmup_steps_ratio = config.optim.get("lr_warmup_steps_ratio", 0.0)
-            num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+        zero_indexed_step = config.optim.get("zero_indexed_step", True)
 
-        if self.rank == 0:
-            print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
-
-        from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
+        from verl.utils.torch_functional import (
+            get_constant_schedule_with_warmup,
+            get_cosine_schedule_with_warmup,
+            get_linear_decay_to_min_schedule,
+        )
 
         if lr_scheduler_type == "constant":
+            num_warmup_steps = int(config.optim.get("lr_warmup_steps", -1))
+            if num_warmup_steps < 0:
+                num_warmup_steps_ratio = config.optim.get("lr_warmup_steps_ratio", 0.0)
+                num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+            if self.rank == 0:
+                print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
             critic_lr_scheduler = get_constant_schedule_with_warmup(
                 optimizer=critic_optimizer, num_warmup_steps=num_warmup_steps
             )
         elif lr_scheduler_type == "cosine":
+            num_warmup_steps = int(config.optim.get("lr_warmup_steps", -1))
+            if num_warmup_steps < 0:
+                num_warmup_steps_ratio = config.optim.get("lr_warmup_steps_ratio", 0.0)
+                num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+            if self.rank == 0:
+                print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
             min_lr_ratio = config.optim.get("min_lr_ratio", 0.0)
             num_cycles = config.optim.get("num_cycles", 0.5)
             critic_lr_scheduler = get_cosine_schedule_with_warmup(
@@ -1635,6 +1671,24 @@ class CriticWorker(Worker, DistProfilerExtension):
                 num_training_steps=total_steps,
                 min_lr_ratio=min_lr_ratio,
                 num_cycles=num_cycles,
+                zero_indexed_step=zero_indexed_step,
+            )
+        elif lr_scheduler_type == "linear_decay_to_min":
+            min_lr_ratio = config.optim.get("min_lr_ratio", 0.0)
+            lr_decay_steps = config.optim.get("lr_decay_steps", -1)
+            lr_decay_steps_ratio = config.optim.get("lr_decay_steps_ratio", None)
+            if self.rank == 0:
+                print(
+                    "Total steps: "
+                    f"{total_steps}, lr_decay_steps: {lr_decay_steps}, lr_decay_steps_ratio: {lr_decay_steps_ratio}"
+                )
+            critic_lr_scheduler = get_linear_decay_to_min_schedule(
+                optimizer=critic_optimizer,
+                num_training_steps=total_steps,
+                min_lr_ratio=min_lr_ratio,
+                decay_steps=lr_decay_steps,
+                decay_steps_ratio=lr_decay_steps_ratio,
+                zero_indexed_step=zero_indexed_step,
             )
         else:
             raise NotImplementedError(f"LR scheduler type {lr_scheduler_type} is not supported")

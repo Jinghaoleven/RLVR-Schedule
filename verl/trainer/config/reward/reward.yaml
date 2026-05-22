@@ -12,6 +12,8 @@ custom_reward_function:
   name: compute_score
   reward_kwargs:
     model_name: ${oc.select:reward.reward_model.model_path}
+    prompt_length: ${oc.select:reward.reward_model.rollout.prompt_length}
+    response_length: ${oc.select:reward.reward_model.rollout.response_length}
 
 # reward manager, see `verl/trainer/config/reward_manager.yaml` for details.
 reward_manager:

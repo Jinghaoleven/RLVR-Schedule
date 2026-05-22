@@ -35,7 +35,13 @@ min_lr_ratio: 0.0
 # Number of cosine cycles in LR schedule
 num_cycles: 0.5
 
-# LR scheduler type: "constant" or "cosine"
+# Step where linear_decay_to_min first reaches min_lr_ratio
+lr_decay_steps: -1
+
+# Ratio of total steps where linear_decay_to_min first reaches min_lr_ratio
+lr_decay_steps_ratio: null
+
+# LR scheduler type: "constant", "cosine", or "linear_decay_to_min"
 lr_scheduler_type: constant
 
 # Whether the LR schedule uses 0-indexed steps

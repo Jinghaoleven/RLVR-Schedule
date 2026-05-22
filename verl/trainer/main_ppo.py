@@ -438,16 +438,16 @@ def create_rl_dataset(data_paths, data_config, default_local_dir, tokenizer, pro
 
         dataset_cls = DynamicGenDataset
         print("Using DynamicGenDataset for data generation.")
-    elif data_config.rollout_strategy is not None and is_train:
+    elif data_config.schedule_strategy is not None and is_train:
         # curriculum_config = None
-        if data_config.rollout_strategy in ["prefix",]:
+        if data_config.schedule_strategy in ["off_policy_schedule",]:
             dataset_cls = RLHFProDataset
         else:
             dataset_cls = RLHFDataset
     else:
         # Use the default RLHFDataset class if no custom class is specified
         dataset_cls = RLHFDataset
-    print(f"Rollout strategy {data_config.rollout_strategy} || Using dataset class: {dataset_cls.__name__}.")
+    print(f"Schedule strategy {data_config.schedule_strategy} || Using dataset class: {dataset_cls.__name__}.")
 
     # Instantiate the dataset using the determined dataset class
     dataset = build_dataset(

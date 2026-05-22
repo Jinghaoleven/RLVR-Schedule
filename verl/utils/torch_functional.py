@@ -792,6 +792,67 @@ def get_cosine_schedule_with_warmup(
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
+def get_linear_decay_to_min_schedule(
+    optimizer: Optimizer,
+    num_training_steps: int,
+    min_lr_ratio: float = 0.0,
+    decay_steps: Optional[int] = None,
+    decay_steps_ratio: Optional[float] = None,
+    last_epoch: int = -1,
+    zero_indexed_step: bool = True,
+):
+    """
+    Create a schedule that starts at the initial LR, decays linearly to ``min_lr_ratio``,
+    and then stays at the minimum LR for the remaining training steps.
+
+    This schedule intentionally has no warmup phase.
+
+    Args:
+        optimizer (:class:`~torch.optim.Optimizer`):
+            The optimizer for which to schedule the learning rate.
+        num_training_steps (:obj:`int`):
+            The total number of training steps.
+        min_lr_ratio (:obj:`float`, `optional`, defaults to 0.0):
+            The minimum lr ratio w.r.t the maximum.
+        decay_steps (:obj:`int`, `optional`, defaults to None):
+            The absolute step at which the LR first reaches ``min_lr_ratio``.
+            If not provided or <= 0, ``decay_steps_ratio`` is used.
+        decay_steps_ratio (:obj:`float`, `optional`, defaults to None):
+            The ratio of total steps at which the LR first reaches ``min_lr_ratio``.
+            Used only when ``decay_steps`` is not set to a positive value.
+        last_epoch (:obj:`int`, `optional`, defaults to -1):
+            The index of the last epoch when resuming training.
+        zero_indexed_step (:obj:`bool`, `optional`, defaults to True):
+            Whether the LR schedule uses 0-indexed steps. If True (default), step counting starts at 0.
+            If False, step counting starts at 1.
+    Return:
+        :obj:`torch.optim.lr_scheduler.LambdaLR` with the appropriate schedule.
+    """
+    min_lr_ratio = 0.0 if min_lr_ratio is None else min_lr_ratio
+    assert 0.0 <= min_lr_ratio <= 1.0
+
+    if decay_steps is not None and decay_steps > 0:
+        resolved_decay_steps = decay_steps
+    elif decay_steps_ratio is not None and decay_steps_ratio > 0:
+        assert 0.0 <= decay_steps_ratio <= 1.0
+        resolved_decay_steps = int(decay_steps_ratio * num_training_steps)
+    else:
+        resolved_decay_steps = num_training_steps
+
+    resolved_decay_steps = max(1, resolved_decay_steps)
+    slope = 1.0 - min_lr_ratio
+
+    def lr_lambda(current_step):
+        if not zero_indexed_step:
+            current_step += 1
+        if current_step >= resolved_decay_steps:
+            return min_lr_ratio
+        progress = float(current_step) / float(resolved_decay_steps)
+        return 1.0 - slope * progress
+
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
 def get_constant_schedule_with_warmup(
     optimizer: Optimizer,
     num_warmup_steps: int,

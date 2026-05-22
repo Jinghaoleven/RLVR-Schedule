@@ -227,6 +227,8 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Prompt mask, 1 for prefix response token, 0 for prompt token."""
     response_mask: torch.Tensor
     """Padded response mask."""
+    valid_response_mask: Optional[torch.Tensor] = None
+    """Valid on-policy response without step cutoff"""
     attention_mask: torch.Tensor
     """Padded attention mask."""
     response_logprobs: Optional[torch.Tensor] = None
@@ -538,7 +540,7 @@ class AgentLoopWorker:
             sampling_params["temperature"] = config.val_kwargs.temperature
             sampling_params["max_tokens"] = config.response_length
         else:
-            if self.config.actor_rollout_ref.rollout.rollout_strategy == "prefix":
+            if self.config.actor_rollout_ref.rollout.schedule_strategy == "off_policy_schedule":
                 _, step_response_length = self._prefix_curriculum(batch.meta_info.get("global_steps")) 
                 sampling_params["max_tokens"] = step_response_length
 
@@ -649,9 +651,8 @@ class AgentLoopWorker:
         # TODO(wuxibin): remove padding and use tensordict.
         valid_prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
         valid_response_length = self.config.actor_rollout_ref.rollout.response_length
-        if self.config.actor_rollout_ref.rollout.rollout_strategy in ["prefix","on_policy_prefix","on_policy_acc_prefix"] and not validate:
-            step_prompt_length, step_response_length, prefix_ratio = self._prefix_curriculum(global_steps) 
-            # print("[Agent-Loop]: global_steps",global_steps,step_prompt_length,step_response_length)
+        if self.config.actor_rollout_ref.rollout.schedule_strategy in ["off_policy_schedule", "tp_schedule"] and not validate:
+            step_prompt_length, step_response_length, prefix_ratio = self._prefix_curriculum(global_steps)
         else:
             step_prompt_length, step_response_length = valid_prompt_length, valid_response_length
 
@@ -660,43 +661,24 @@ class AgentLoopWorker:
         prompt_mask = output.prompt_mask[-valid_prompt_length:] if output.prompt_mask is not None else None           # 
         response_mask = output.response_mask[:valid_response_length] if output.response_mask is not None else None
         response_logprobs = output.response_logprobs[:valid_response_length] if output.response_logprobs is not None else None
+        valid_response_mask = [1] * len(response_ids)  # all response tokens are valid for loss calculation, no step cutoff
 
 
-        if self.config.actor_rollout_ref.rollout.rollout_strategy in ["on_policy_prefix", "on_policy_acc_prefix"] and not validate:
-            prefix_length = min(int(len(response_ids) * prefix_ratio), len(response_ids)-1)   # ensure at least 1 token for suffix response
+        if self.config.actor_rollout_ref.rollout.schedule_strategy == "tp_schedule" and not validate:
+            prefix_length = min(int(len(response_ids) * prefix_ratio), len(response_ids) - 1)
             prompt_length = len(prompt_ids)
-            prefix_prompt_ids = prompt_ids + response_ids[:prefix_length]    # 必定 <= step_prompt_length, 因为len(response_ids) <= valid_response_length
-            suffix_response_ids = response_ids[prefix_length:]               # 必定 <= step_response_length
+            prefix_prompt_ids = prompt_ids + response_ids[:prefix_length]
+            suffix_response_ids = response_ids[prefix_length:]
             prefix_prompt_mask = [0] * prompt_length + [1] * (len(prefix_prompt_ids) - prompt_length)
             suffix_response_mask = [1] * len(suffix_response_ids)
-            response_logprobs = response_logprobs[prefix_length:] if response_logprobs is not None else None
+            suffix_response_logprobs = response_logprobs[prefix_length:] if response_logprobs is not None else None
 
-        if self.config.actor_rollout_ref.rollout.rollout_strategy == "on_policy_acc_prefix" and not validate:
-            valid_responses = torch.tensor(response_ids).unsqueeze(0)
-            # valid_prompts = torch.tensor(prompt_ids).unsqueeze(0)
-            
-            await self._fast_compute_score(
-                output,
-                valid_responses=valid_responses,
-                kwargs=kwargs,
-            )
-            if output.reward_score ==0:
-                prompt_ids = prefix_prompt_ids
-                response_ids = suffix_response_ids
-                prompt_mask = prefix_prompt_mask
-                response_mask = suffix_response_mask
-            else:
-                prompt_ids = prompt_ids
-                response_ids = response_ids
-                prompt_mask = [0] * prompt_length
-                response_mask = response_mask
-            # print(f"[AgentLoopWorker]: reward_score={output.reward_score}, use_acc_prefix={output.reward_score != 0}")
-        elif self.config.actor_rollout_ref.rollout.rollout_strategy == "on_policy_prefix" and not validate:
             prompt_ids = prefix_prompt_ids
             response_ids = suffix_response_ids
             prompt_mask = prefix_prompt_mask
             response_mask = suffix_response_mask
-        
+            response_logprobs = suffix_response_logprobs
+
 
         self.tokenizer.padding_side = "left"
         prompt_output = self.tokenizer.pad(
@@ -731,7 +713,6 @@ class AgentLoopWorker:
             return_tensors="pt",
             return_attention_mask=True,
         )
-        # print("[Check] response_output:",response_output["input_ids"],response_ids)
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
             response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
@@ -746,12 +727,23 @@ class AgentLoopWorker:
         if response_mask_output["input_ids"].dim() == 1:
             response_mask_output["input_ids"] = response_mask_output["input_ids"].unsqueeze(0)
 
-        response_logprobs = None
+        valid_response_mask_output = self.tokenizer.pad(
+            {"input_ids": valid_response_mask[:step_response_length]},
+            padding="max_length",
+            max_length=step_response_length,
+            return_tensors="pt",
+            return_attention_mask=False,
+        )
+        if valid_response_mask_output["input_ids"].dim() == 1:
+            valid_response_mask_output["input_ids"] = valid_response_mask_output["input_ids"].unsqueeze(0)
+
+        # response_logprobs = None
         if output.response_logprobs is not None:
             pad_size = step_response_length - len(response_logprobs)
             response_logprobs = torch.tensor(response_logprobs + [0.0] * pad_size).unsqueeze(0)
 
         response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
+        valid_response_mask = valid_response_mask_output["input_ids"] * response_output["attention_mask"]
         attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
         input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
 
@@ -795,8 +787,8 @@ class AgentLoopWorker:
         )
         await self._compute_teacher_logprobs(
             output,
-            prompt_ids=output.prompt_ids,
-            response_ids=output.response_ids,
+            prompt_ids=prompt_ids,
+            response_ids=response_ids,
             validate=validate,
         )
         teacher_ids, teacher_logprobs = (
@@ -824,6 +816,7 @@ class AgentLoopWorker:
             position_ids=position_ids,
             prompt_mask=prompt_mask,
             response_mask=response_mask,
+            valid_response_mask=valid_response_mask,
             attention_mask=attention_mask,
             response_logprobs=response_logprobs,
             routed_experts=routed_experts,
@@ -837,52 +830,58 @@ class AgentLoopWorker:
             extra_fields=output.extra_fields,
         )
 
-    # def _prefix_curriculum(self, global_steps: int) -> float:
-    #     # 每次读取 proxy，而不是在 __init__ 时复制到本地
-    #     self.max_model_len = self.config.actor_rollout_ref.rollout.max_model_len or self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length
-
-    #     def linear_ratio(epoch: int, max_response_ratio: float, max_curriculum_epoch: int, min_curriculum_epoch: int = 0) -> float:
-    #         """
-    #         linear schedule:
-    #         - epoch = 0             → ratio = max_response_ratio
-    #         - epoch >= max_curriculum_epoch    → ratio = 1.0
-    #         - 0 < epoch < end_ep    → ratio = linear between max_response_ratio and 1.0
-    #         """
-    #         if min_curriculum_epoch ==0:
-    #             return max_response_ratio - max_response_ratio * (min(epoch / max_curriculum_epoch, 1))
-    #         else:
-    #             return max_response_ratio - max_response_ratio * (min(max(epoch-min_curriculum_epoch,1) / max_curriculum_epoch, 1))
-
-    #     progress_ratio = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_response_ratio, self.config.actor_rollout_ref.rollout.max_curriculum_epoch, self.config.actor_rollout_ref.rollout.min_curriculum_epoch)
-    #     step_prompt_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * progress_ratio)
-    #     step_response_length = self.max_model_len - step_prompt_length
-
-    #     return step_prompt_length, step_response_length
-    
     def _prefix_curriculum(self, global_steps: int) -> float:
-        # 每次读取 proxy，而不是在 __init__ 时复制到本地
-        self.max_model_len = self.config.actor_rollout_ref.rollout.max_model_len or self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length
+        self.max_model_len = (
+            self.config.actor_rollout_ref.rollout.max_model_len
+            or self.config.actor_rollout_ref.rollout.prompt_length
+            + self.config.actor_rollout_ref.rollout.response_length
+        )
+        schedule_mode = self.config.actor_rollout_ref.rollout.schedule_mode
+        gamma = getattr(self.config.actor_rollout_ref.rollout, "gamma_ratio", 2.0)
 
-        def linear_ratio(epoch: int, max_prefix_ratio: float, max_prefix_epoch: int, min_prefix_epoch: int = 0) -> float:
-            """
-            linear schedule:
-            - epoch = 0             → ratio = max_prefix_ratio
-            - epoch >= max_prefix_epoch    → ratio = 1.0
-            - 0 < epoch < end_ep    → ratio = linear between max_prefix_ratio and 1.0
-            """
-            if min_prefix_epoch ==0:
-                return max_prefix_ratio - max_prefix_ratio * (min(epoch / max_prefix_epoch, 1))
-            else:
-                return max_prefix_ratio - max_prefix_ratio * (min(max(epoch-min_prefix_epoch,1) / max_prefix_epoch, 1))
+        def schedule_progress(epoch: int, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            if max_schedule_step <= min_schedule_step:
+                raise ValueError(
+                    f"max_schedule_step must be greater than min_schedule_step, "
+                    f"got {max_schedule_step} <= {min_schedule_step}"
+                )
+            return min(max((epoch - min_schedule_step) / (max_schedule_step - min_schedule_step), 0), 1)
 
-        prefix_ratio = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_prefix_ratio, self.config.actor_rollout_ref.rollout.max_prefix_epoch, self.config.actor_rollout_ref.rollout.min_prefix_epoch)
-        step_prompt_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * prefix_ratio)
+        def linear_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            progress = schedule_progress(epoch, max_schedule_step, min_schedule_step)
+            return initial_schedule_magnitude * (1 - progress)
 
-        prefix_ratio_raw = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_prefix_ratio, self.config.actor_rollout_ref.rollout.max_prefix_epoch)
-        step_prompt_raw_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * prefix_ratio_raw)
-        step_response_length = self.max_model_len - step_prompt_raw_length
+        def sigmoid_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            progress = schedule_progress(epoch, max_schedule_step, min_schedule_step)
+            k = 8.0
+            sig = 1 / (1 + np.exp(k * (progress - 0.5)))
+            sig_start = 1 / (1 + np.exp(-k * 0.5))
+            sig_end = 1 / (1 + np.exp(k * 0.5))
+            return initial_schedule_magnitude * (sig - sig_end) / (sig_start - sig_end)
 
-        return step_prompt_length, step_response_length, prefix_ratio_raw
+        def gamma_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            return linear_ratio(epoch, initial_schedule_magnitude, max_schedule_step, min_schedule_step) ** gamma
+
+        prefix_fn_map = {
+            "linear": linear_ratio,
+            "sigmoid": sigmoid_ratio,
+            "gamma": gamma_ratio,
+        }
+        if schedule_mode not in prefix_fn_map:
+            raise ValueError(f"Invalid schedule_mode: {schedule_mode}")
+
+        prefix_ratio = prefix_fn_map[schedule_mode](
+            global_steps,
+            self.config.actor_rollout_ref.rollout.initial_schedule_magnitude,
+            self.config.actor_rollout_ref.rollout.max_schedule_step,
+            self.config.actor_rollout_ref.rollout.min_schedule_step,
+        )
+        step_prompt_length = int(
+            self.config.actor_rollout_ref.rollout.prompt_length
+            + self.config.actor_rollout_ref.rollout.response_length * prefix_ratio
+        )
+        step_response_length = self.max_model_len - step_prompt_length
+        return step_prompt_length, step_response_length, prefix_ratio
 
     def _compute_multi_modal_inputs(self, output, input_ids) -> dict[str, torch.Tensor]:
         """Compute multi-modal inputs with image and video."""
@@ -1039,6 +1038,10 @@ class AgentLoopWorker:
             optional_outputs["routed_experts"] = torch.cat([input.routed_experts for input in inputs], dim=0)
         if inputs[0].prompt_mask is not None:
             optional_outputs["prompt_mask"] = torch.cat([input.prompt_mask for input in inputs], dim=0)
+        if inputs[0].valid_response_mask is not None:
+            optional_outputs["valid_response_mask"] = torch.cat(
+                [input.valid_response_mask for input in inputs], dim=0
+            )
         if inputs[0].teacher_logprobs is not None and inputs[0].teacher_ids is not None:
             optional_outputs["teacher_logprobs"] = torch.cat([input.teacher_logprobs for input in inputs], dim=0)
             optional_outputs["teacher_ids"] = torch.cat([input.teacher_ids for input in inputs], dim=0)

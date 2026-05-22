@@ -136,6 +136,47 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
+def compute_entropy_topk_response_mask(data: DataProto, entropys: torch.Tensor, token_ratio: float):
+    """Select response tokens with the largest full-logits entropy.
+
+    The current response_mask and attention-derived response mask define valid
+    candidate tokens, and token_ratio controls how many high-entropy tokens are
+    selected per sample.
+    """
+    current_response_mask = data.batch["response_mask"]
+    valid_response_mask = compute_response_mask(data).to(device=entropys.device)
+    valid_response_mask = valid_response_mask * current_response_mask.to(device=entropys.device)
+    token_ratio = min(max(float(token_ratio), 0.0), 1.0)
+    token_budgets = (valid_response_mask.sum(dim=-1).to(dtype=torch.float32) * token_ratio).ceil().to(dtype=torch.long)
+
+    entropy_scores = entropys.to(device=valid_response_mask.device).masked_fill(valid_response_mask == 0, -float("inf"))
+    entropy_topk_mask = torch.zeros_like(valid_response_mask)
+
+    for row_idx, token_budget in enumerate(token_budgets.tolist()):
+        valid_token_count = int(valid_response_mask[row_idx].sum().item())
+        topk = min(max(int(token_budget), 0), valid_token_count)
+        if topk == 0:
+            continue
+        topk_indices = torch.topk(entropy_scores[row_idx], k=topk).indices
+        entropy_topk_mask[row_idx, topk_indices] = 1
+
+    return entropy_topk_mask.to(device=current_response_mask.device, dtype=current_response_mask.dtype)
+
+
+def apply_entropy_soft_weight_to_advantage(data: DataProto, alpha: float, kappa: float, bonus_scale: float = 1.0):
+    """Add a clipped entropy bonus to token advantages."""
+    if kappa <= 0:
+        raise ValueError(f"entropy_adv_schedule_kappa must be positive, got {kappa}.")
+
+    advantages = data.batch["advantages"]
+    response_mask = data.batch["response_mask"].to(device=advantages.device, dtype=advantages.dtype)
+    entropys = data.batch["entropys"].to(device=advantages.device, dtype=advantages.dtype)
+
+    entropy_bonus = torch.minimum(alpha * entropys.detach(), advantages.abs() / kappa)
+    data.batch["advantages"] = (advantages + bonus_scale * entropy_bonus) * response_mask
+    data.batch.pop("entropys")
+
+
 def compute_advantage(
     data: DataProto,
     adv_estimator: AdvantageEstimator,
@@ -322,6 +363,45 @@ class RayPPOTrainer:
 
         self.checkpoint_manager = None
 
+    def _resolve_schedule_ratio_to_steps(self, total_training_steps: int):
+        rollout_config = self.config.actor_rollout_ref.rollout
+        max_schedule_ratio = rollout_config.get("max_schedule_ratio", None)
+        if max_schedule_ratio is None:
+            return
+
+        min_schedule_ratio = rollout_config.get("min_schedule_ratio", 0)
+        if min_schedule_ratio is None:
+            min_schedule_ratio = 0
+
+        def parse_ratio(name: str, value) -> float:
+            ratio = float(value)
+            if ratio < 0 or ratio > 1:
+                raise ValueError(f"data.{name} must be a ratio in [0, 1], got {value}")
+            return ratio
+
+        min_schedule_ratio = parse_ratio("min_schedule_ratio", min_schedule_ratio)
+        max_schedule_ratio = parse_ratio("max_schedule_ratio", max_schedule_ratio)
+        min_schedule_step = int(total_training_steps * min_schedule_ratio)
+        max_schedule_step = int(total_training_steps * max_schedule_ratio)
+        if max_schedule_step <= min_schedule_step:
+            raise ValueError(
+                "data.max_schedule_ratio must resolve to a step greater than data.min_schedule_ratio; "
+                f"got min={min_schedule_ratio} -> {min_schedule_step}, "
+                f"max={max_schedule_ratio} -> {max_schedule_step}, "
+                f"total_training_steps={total_training_steps}"
+            )
+
+        with open_dict(self.config):
+            self.config.actor_rollout_ref.rollout.min_schedule_step = min_schedule_step
+            self.config.actor_rollout_ref.rollout.max_schedule_step = max_schedule_step
+
+        print(
+            "Resolved schedule ratios to steps: "
+            f"min_schedule_ratio={min_schedule_ratio} -> {min_schedule_step}, "
+            f"max_schedule_ratio={max_schedule_ratio} -> {max_schedule_step}, "
+            f"total_training_steps={total_training_steps}"
+        )
+
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
         """
         Creates the train and validation dataloaders.
@@ -403,6 +483,7 @@ class RayPPOTrainer:
 
         self.total_training_steps = total_training_steps
         print(f"Total training steps: {self.total_training_steps}")
+        self._resolve_schedule_ratio_to_steps(total_training_steps)
 
         try:
             OmegaConf.set_struct(self.config, True)
@@ -802,11 +883,13 @@ class RayPPOTrainer:
             if not class_dict:
                 continue
             worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
+            # 真实创建ray actors并colocate所有role
             wg_dict = self.ray_worker_group_cls(
                 resource_pool=resource_pool,
                 ray_cls_with_init=worker_dict_cls,
                 **wg_kwargs,
             )
+            # 物理worker colocate, 逻辑worker分开调用
             spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
             all_wg.update(spawn_wg)
 
@@ -1314,6 +1397,47 @@ class RayPPOTrainer:
             critic_output = self.critic_wg.update_critic(batch)
         return critic_output
 
+    def _prefix_curriculum(self, global_steps: int) -> float:
+        schedule_mode = self.config.actor_rollout_ref.rollout.schedule_mode
+        gamma = getattr(self.config.actor_rollout_ref.rollout, "gamma_ratio", 2.0)
+
+        def schedule_progress(epoch: int, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            if max_schedule_step <= min_schedule_step:
+                raise ValueError(
+                    f"max_schedule_step must be greater than min_schedule_step, "
+                    f"got {max_schedule_step} <= {min_schedule_step}"
+                )
+            return min(max((epoch - min_schedule_step) / (max_schedule_step - min_schedule_step), 0), 1)
+
+        def linear_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            progress = schedule_progress(epoch, max_schedule_step, min_schedule_step)
+            return initial_schedule_magnitude * (1 - progress)
+
+        def sigmoid_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            progress = schedule_progress(epoch, max_schedule_step, min_schedule_step)
+            k = 8.0
+            sig = 1 / (1 + np.exp(k * (progress - 0.5)))
+            sig_start = 1 / (1 + np.exp(-k * 0.5))
+            sig_end = 1 / (1 + np.exp(k * 0.5))
+            return initial_schedule_magnitude * (sig - sig_end) / (sig_start - sig_end)
+
+        def gamma_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            return linear_ratio(epoch, initial_schedule_magnitude, max_schedule_step, min_schedule_step) ** gamma
+
+        prefix_fn_map = {
+            "linear": linear_ratio,
+            "sigmoid": sigmoid_ratio,
+            "gamma": gamma_ratio,
+        }
+        if schedule_mode not in prefix_fn_map:
+            raise ValueError(f"Invalid schedule_mode: {schedule_mode}")
+        return prefix_fn_map[schedule_mode](
+            global_steps,
+            self.config.actor_rollout_ref.rollout.initial_schedule_magnitude,
+            self.config.actor_rollout_ref.rollout.max_schedule_step,
+            self.config.actor_rollout_ref.rollout.min_schedule_step,
+        )
+
     def fit(self):
         """
         The training loop of PPO.
@@ -1450,7 +1574,6 @@ class RayPPOTrainer:
                             del rm_scores, gen_baseline_batch, gen_baseline_output
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    # print("[Ray-Check]:",batch.batch["input_ids"].shape,gen_batch_output.batch["input_ids"].shape)
                     batch = batch.union(gen_batch_output)
                     if self._should_compute_teacher_colocate(batch):
                         with marked_timer("teacher", timing_raw, color="cyan"):
@@ -1505,6 +1628,11 @@ class RayPPOTrainer:
                         with marked_timer("old_log_prob", timing_raw, color="blue"):
                             old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(batch)
                             entropys = old_log_prob.batch["entropys"]
+                            if self.config.actor_rollout_ref.rollout.schedule_strategy == "forking_tok_schedule":
+                                prefix_ratio = self._prefix_curriculum(self.global_steps)
+                                batch.batch["response_mask"] = compute_entropy_topk_response_mask(
+                                    batch, entropys, token_ratio=1 - prefix_ratio
+                                )
                             response_masks = batch.batch["response_mask"]
                             actor_config = self.config.actor_rollout_ref.actor
                             entropy_agg = agg_loss(
@@ -1518,7 +1646,8 @@ class RayPPOTrainer:
                                 "perf/mfu/actor_infer": old_log_prob_mfu,
                             }
                             metrics.update(old_log_prob_metrics)
-                            old_log_prob.batch.pop("entropys")
+                            if self.config.actor_rollout_ref.rollout.schedule_strategy != "entropy_adv_schedule":
+                                old_log_prob.batch.pop("entropys")
                             if "routed_experts" in batch.batch and "routed_experts" in old_log_prob.batch:
                                 raise ValueError(
                                     "Detected conflicting router replay configuration: "
@@ -1594,6 +1723,17 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+                        if (
+                            self.config.actor_rollout_ref.rollout.schedule_strategy == "entropy_adv_schedule"
+                            and "entropys" in batch.batch
+                        ):
+                            prefix_ratio = self._prefix_curriculum(self.global_steps)
+                            apply_entropy_soft_weight_to_advantage(
+                                batch,
+                                alpha=self.config.algorithm.get("entropy_adv_schedule_alpha", 1.0),
+                                kappa=self.config.algorithm.get("entropy_adv_schedule_kappa", 1.0),
+                                bonus_scale=prefix_ratio,
+                            )
 
                     # update critic
                     if self.use_critic:

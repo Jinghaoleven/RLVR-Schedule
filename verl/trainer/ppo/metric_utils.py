@@ -77,6 +77,35 @@ def _compute_response_info(batch: DataProto) -> dict[str, Any]:
         response_length=response_length,
     )
 
+def _compute_response_info_direct(batch: DataProto) -> dict[str, Any]:
+    """
+    Computes information about prompts and responses from a batch.
+
+    This is an internal helper function that extracts masks and lengths for prompts and responses.
+
+    Args:
+        batch: A DataProto object containing batch data with responses and attention masks.
+
+    Returns:
+        A dictionary containing:
+            - response_mask: Attention mask for the response tokens
+            - prompt_length: Tensor of prompt lengths for each item in the batch
+            - response_length: Tensor of response lengths for each item in the batch
+    """
+    response_length = batch.batch["responses"].shape[-1]
+
+    prompt_mask = batch.batch["attention_mask"][:, :-response_length]
+    response_mask = batch.batch["response_mask"]
+
+    prompt_length = prompt_mask.sum(-1).float()
+    response_length = response_mask.sum(-1).float()  # (batch_size,)
+
+    return dict(
+        response_mask=response_mask,
+        prompt_length=prompt_length,
+        response_length=response_length,
+    )
+
 
 def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str, Any]:
     """
@@ -115,7 +144,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
 
     max_prompt_length = prompt_mask.size(-1)
 
-    response_info = _compute_response_info(batch)
+    response_info = _compute_response_info_direct(batch)
     prompt_length = response_info["prompt_length"]
     response_length = response_info["response_length"]
 
@@ -248,7 +277,7 @@ def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> di
         - Other stages ("ref", "values", "adv", "update_critic", "update_actor") use all tokens
           (prompt + response)
     """
-    response_info = _compute_response_info(batch)
+    response_info = _compute_response_info_direct(batch)
     num_prompt_tokens = torch.sum(response_info["prompt_length"]).item()
     num_response_tokens = torch.sum(response_info["response_length"]).item()
     num_overall_tokens = num_prompt_tokens + num_response_tokens

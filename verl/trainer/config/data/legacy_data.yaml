@@ -32,10 +32,12 @@ response_key: answer
 # The field used to select the reward function (if using different ones per example).
 reward_fn_key: data_source
 
-rollout_strategy: null # prefix, batch_random
-max_prefix_ratio: null
-max_prefix_epoch: null
-min_prefix_epoch: 0
+schedule_strategy: null # off_policy_schedule, tp_schedule, forking_tok_schedule, entropy_adv_schedule
+schedule_mode: null # linear, sigmoid, gamma
+initial_schedule_magnitude: null
+max_schedule_ratio: null
+min_schedule_ratio: 0
+gamma_ratio: 2.0
 
 # Maximum prompt length. All prompts will be left-padded to this length.
 # An error will be reported if the length is too long.

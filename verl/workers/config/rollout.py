@@ -192,10 +192,14 @@ class RolloutConfig(BaseConfig):
     prompt_length: int = 512
     response_length: int = 512
 
-    max_prefix_ratio: Optional[float] = None
-    max_prefix_epoch: Optional[int] = None
-    min_prefix_epoch: Optional[int] = 0
-    rollout_strategy: Optional[str] = None
+    initial_schedule_magnitude: Optional[float] = None
+    max_schedule_ratio: Optional[float] = None
+    min_schedule_ratio: Optional[float] = 0
+    max_schedule_step: Optional[int] = None
+    min_schedule_step: Optional[int] = 0
+    gamma_ratio: float = 2.0
+    schedule_strategy: Optional[str] = None
+    schedule_mode: Optional[str] = None  # linear, sigmoid, gamma
 
     dtype: str = "bfloat16"
     gpu_memory_utilization: float = 0.5

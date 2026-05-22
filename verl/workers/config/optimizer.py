@@ -94,14 +94,19 @@ class FSDPOptimizerConfig(OptimizerConfig):
             "bitsandbytes.optim").
         lr (float): Learning rate.
         min_lr_ratio (Optional[float]): Minimum LR ratio for cosine schedule.
-        lr_scheduler_type (str): LR scheduler type: "constant" or "cosine".
+        lr_scheduler_type (str): LR scheduler type: "constant", "cosine", or "linear_decay_to_min".
         num_cycles (float): Number of cosine cycles in LR schedule.
+        lr_decay_steps (Optional[int]): Step where linear_decay_to_min first reaches min_lr_ratio.
+        lr_decay_steps_ratio (Optional[float]): Ratio of total steps where linear_decay_to_min
+            first reaches min_lr_ratio.
         zero_indexed_step (bool): Whether the LR schedule uses 0-indexed steps. If True (default),
             step counting starts at 0. If False, step counting starts at 1.
     """
 
     _mutable_fields = OptimizerConfig._mutable_fields.copy()
     _mutable_fields.add("lr_scheduler_type")
+    _mutable_fields.add("lr_decay_steps")
+    _mutable_fields.add("lr_decay_steps_ratio")
 
     optimizer: str = "AdamW"
     optimizer_impl: str = "torch.optim"
@@ -110,6 +115,8 @@ class FSDPOptimizerConfig(OptimizerConfig):
     warmup_style: Optional[str] = None
     lr_scheduler_type: str = "constant"
     num_cycles: float = 0.5
+    lr_decay_steps: Optional[int] = -1
+    lr_decay_steps_ratio: Optional[float] = None
     override_optimizer_config: Optional[dict] = None
     zero_indexed_step: bool = True
 
@@ -120,7 +127,9 @@ class FSDPOptimizerConfig(OptimizerConfig):
                 "`warmup_style` is deprecated, use `lr_scheduler_type` instead.", DeprecationWarning, stacklevel=2
             )
             self.lr_scheduler_type = self.warmup_style
-        assert self.lr_scheduler_type in ["constant", "cosine"]
+        assert self.lr_scheduler_type in ["constant", "cosine", "linear_decay_to_min"]
+        assert self.lr_decay_steps is None or self.lr_decay_steps >= -1
+        assert self.lr_decay_steps_ratio is None or 0.0 <= self.lr_decay_steps_ratio <= 1.0
         return super().__post_init__()
 
 

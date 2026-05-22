@@ -430,32 +430,57 @@ class FSDPEngine(BaseEngine):
         return optimizer
 
     def _build_lr_scheduler(self, optimizer):
-        from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
+        from verl.utils.torch_functional import (
+            get_constant_schedule_with_warmup,
+            get_cosine_schedule_with_warmup,
+            get_linear_decay_to_min_schedule,
+        )
 
         optim_config = self.optimizer_config
 
         total_steps = optim_config.total_training_steps
-        num_warmup_steps = optim_config.lr_warmup_steps
         lr_scheduler_type = optim_config.lr_scheduler_type
         min_lr_ratio = optim_config.min_lr_ratio
         num_cycles = optim_config.num_cycles
+        lr_decay_steps = optim_config.lr_decay_steps
+        lr_decay_steps_ratio = optim_config.lr_decay_steps_ratio
         zero_indexed_step = optim_config.zero_indexed_step
-        if num_warmup_steps <= 0:
-            num_warmup_steps_ratio = optim_config.lr_warmup_steps_ratio
-            num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
-
-        if self.rank == 0:
-            print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
 
         if lr_scheduler_type == "constant":
+            num_warmup_steps = optim_config.lr_warmup_steps
+            if num_warmup_steps <= 0:
+                num_warmup_steps_ratio = optim_config.lr_warmup_steps_ratio
+                num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+            if self.rank == 0:
+                print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
             lr_scheduler = get_constant_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=num_warmup_steps)
         elif lr_scheduler_type == "cosine":
+            num_warmup_steps = optim_config.lr_warmup_steps
+            if num_warmup_steps <= 0:
+                num_warmup_steps_ratio = optim_config.lr_warmup_steps_ratio
+                num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+            if self.rank == 0:
+                print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
             lr_scheduler = get_cosine_schedule_with_warmup(
                 optimizer=optimizer,
                 num_warmup_steps=num_warmup_steps,
                 num_training_steps=total_steps,
                 min_lr_ratio=min_lr_ratio,
                 num_cycles=num_cycles,
+                zero_indexed_step=zero_indexed_step,
+            )
+        elif lr_scheduler_type == "linear_decay_to_min":
+            if self.rank == 0:
+                print(
+                    "Total steps: "
+                    f"{total_steps}, lr_decay_steps: {lr_decay_steps}, lr_decay_steps_ratio: {lr_decay_steps_ratio}"
+                )
+            lr_scheduler = get_linear_decay_to_min_schedule(
+                optimizer=optimizer,
+                num_training_steps=total_steps,
+                min_lr_ratio=min_lr_ratio,
+                decay_steps=lr_decay_steps,
+                decay_steps_ratio=lr_decay_steps_ratio,
                 zero_indexed_step=zero_indexed_step,
             )
         else:

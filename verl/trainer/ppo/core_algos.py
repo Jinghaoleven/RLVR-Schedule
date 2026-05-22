@@ -1357,7 +1357,8 @@ def compute_policy_loss_vanilla(
     # if torch.equal(pg_losses, advantages):
     #     print("[Check] pg_losses == advantages!!")
     # else:
-    #     print(f"[Check] pg_losses: {pg_losses}, advantages: {advantages}")
+    # print(f"[Check] pg_losses: {pg_losses}, advantages: {advantages}")
+    # print(f"[Check] pg_losses: {pg_losses}, shape: {pg_losses.shape}")
 
     # Apply rollout correction weights if provided
     if rollout_is_weights is not None:

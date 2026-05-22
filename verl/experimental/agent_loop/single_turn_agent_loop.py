@@ -49,7 +49,7 @@ class SingleTurnAgentLoop(AgentLoopBase):
         if validate:
             messages = list(kwargs["raw_prompt"])
         else:
-            if self.config.actor_rollout_ref.rollout.rollout_strategy == "prefix":
+            if self.config.actor_rollout_ref.rollout.schedule_strategy == "off_policy_schedule":
                 progress_ratio = self._prefix_curriculum(global_steps)
                 with_response = progress_ratio > 0
             if with_response:
@@ -232,17 +232,42 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
     def _prefix_curriculum(self, global_steps: int) -> float:
         # 每次读取 proxy，而不是在 __init__ 时复制到本地
         self.max_model_len = self.config.actor_rollout_ref.rollout.max_model_len or self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length
+        schedule_mode = self.config.actor_rollout_ref.rollout.schedule_mode
+        gamma = getattr(self.config.actor_rollout_ref.rollout, "gamma_ratio", 2.0)
+        
+        def schedule_progress(epoch: int, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            if max_schedule_step <= min_schedule_step:
+                raise ValueError(
+                    f"max_schedule_step must be greater than min_schedule_step, "
+                    f"got {max_schedule_step} <= {min_schedule_step}"
+                )
+            return min(max((epoch - min_schedule_step) / (max_schedule_step - min_schedule_step), 0), 1)
 
-        def linear_ratio(epoch: int, max_prefix_ratio: float, max_prefix_epoch: int, min_prefix_epoch: int) -> float:
-            """
-            linear schedule:
-            - epoch = 0             → ratio = max_prefix_ratio
-            - epoch >= max_prefix_epoch    → ratio = 1.0
-            - 0 < epoch < end_ep    → ratio = linear between max_prefix_ratio and 1.0
-            """
-            return max_prefix_ratio - max_prefix_ratio * (min(max(epoch-min_prefix_epoch,1) / max_prefix_epoch, 1))
-            # return max_prefix_ratio - max_prefix_ratio * (min(epoch / max_prefix_epoch, 1))
+        def linear_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            progress = schedule_progress(epoch, max_schedule_step, min_schedule_step)
+            return initial_schedule_magnitude * (1 - progress)
 
-        progress_ratio = linear_ratio(global_steps, self.config.actor_rollout_ref.rollout.max_prefix_ratio, self.config.actor_rollout_ref.rollout.max_prefix_epoch, self.config.actor_rollout_ref.rollout.min_prefix_epoch)
+        def sigmoid_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            progress = schedule_progress(epoch, max_schedule_step, min_schedule_step)
+            k = 8.0
+            sig = 1 / (1 + np.exp(k * (progress - 0.5)))
+            sig_start = 1 / (1 + np.exp(-k * 0.5))
+            sig_end = 1 / (1 + np.exp(k * 0.5))
+            return initial_schedule_magnitude * (sig - sig_end) / (sig_start - sig_end)
 
-        return progress_ratio
+        def gamma_ratio(epoch: int, initial_schedule_magnitude: float, max_schedule_step: int, min_schedule_step: int = 0) -> float:
+            return linear_ratio(epoch, initial_schedule_magnitude, max_schedule_step, min_schedule_step) ** gamma
+
+        prefix_fn_map = {
+            "linear": linear_ratio,
+            "sigmoid": sigmoid_ratio,
+            "gamma": gamma_ratio,
+        }
+        if schedule_mode not in prefix_fn_map:
+            raise ValueError(f"Invalid schedule_mode: {schedule_mode}")
+
+        prefix_ratio = prefix_fn_map[schedule_mode](global_steps, self.config.actor_rollout_ref.rollout.initial_schedule_magnitude, self.config.actor_rollout_ref.rollout.max_schedule_step, self.config.actor_rollout_ref.rollout.min_schedule_step)
+        step_prompt_length = int(self.config.actor_rollout_ref.rollout.prompt_length + self.config.actor_rollout_ref.rollout.response_length * prefix_ratio)
+        step_response_length = self.max_model_len - step_prompt_length
+
+        return step_prompt_length, step_response_length, prefix_ratio
