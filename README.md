@@ -58,10 +58,10 @@ bash examples/grpo_trainer/run_schedule_4b.sh
 
 | Argument | Description |
 |---|---|
-| `data.schedule_strategy` | Chooses the scheduling method. `tp_schedule` uses trajectory-percentile scheduling, `forking_tok_schedule` schedules around high-entropy fork tokens, and `entropy_adv_schedule` applies an entropy-shaped advantage schedule, `off_policy_schedule` reuses scheduled context from off-policy responses when available. |
-| `data.min_schedule_ratio` | Schedule start ratio in `[0, 1]` relative to `total_training_steps`. For example, `0.1` starts decay at `10%` of training. |
-| `data.max_schedule_ratio` | Schedule end ratio in `[0, 1]` relative to `total_training_steps`. For example, `0.8` finishes decay at `80%` of training. |
-| `data.schedule_mode` | Decay curve between the resolved start and end steps. Supported values are `linear`, `sigmoid`, and `gamma`. |
+| `data.schedule_strategy` | Chooses the scheduling method. `tp_schedule` uses trajectory-percentile scheduling, `forking_tok_schedule` schedules around high-entropy forking tokens, and `entropy_adv_schedule` applies an entropy-shaped advantage schedule, `off_policy_schedule` reuses scheduled context from off-policy responses when available. |
+| `data.min_schedule_ratio` | Schedule start ratio in `[0, 1]` relative to `total_training_steps`. For example, `0.1` starts schedule at `10%` of training. |
+| `data.max_schedule_ratio` | Schedule end ratio in `[0, 1]` relative to `total_training_steps`. For example, `0.8` finishes schedule at `80%` of training. |
+| `data.schedule_mode` | Schedule curve between the resolved start and end steps. Supported values are `linear`, `sigmoid`, and `gamma`. |
 
 ## 🎓 Acknowledgements
 We acknowledge the outstanding open-source contributions from [Verl](https://github.com/verl-project/verl) for building our codebase.
