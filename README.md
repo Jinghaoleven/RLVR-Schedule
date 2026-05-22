@@ -16,7 +16,7 @@ We introduce the temporal schedule of RLVR and show that *when* learning signals
 💡 **Continuous Reasoning Enhancement.** Temporal schedule of RLVR shows consistent progress in advancing reasoning capabilities over RLVR with stagnant credit allocation paradigm, including advantage reweighting and sparse token optimization.
 <div align="center"> <img src="assets/VCurve.png" width = 85% /> </div>
 
-🛠️ **Trajectory Percentile Schedule.** We identify that the simple trajectory percentiles (TP-Schedule) provides a natural perspective in distinguishing heterogeneous policy behaviors, and effectively anchoring the policy entropy in optimizaiton, suggesting a promising credit allocation criteria for temporal scheduling.
+🛠️ **Trajectory Percentile Schedule.** We identify that simple trajectory percentiles (TP-Schedule) provides a natural perspective in distinguishing heterogeneous policy behaviors, and effectively anchoring the policy entropy in optimizaiton, suggesting a promising credit allocation criteria for evolving temporal scheduling.
 <div align="center"> <img src="assets/stat.png" width = 85% /> </div>
 
 <!-- 📈 **Temporal Scheduling Analysis.** Temporal scheduling of RLVR has been validated across credit allocation strategies, RLVR algoorithms, and model sizes. 
@@ -49,9 +49,19 @@ huggingface-cli download --repo-type dataset --resume-download JingHaoZ/OpenReas
 ```
 
 #### 2. Training
-Default to trajectory percentile temporal schedule, run the training scipt.
+Default to trajectory percentile temporal schedule, run the training script.
 ```bash
 bash examples/grpo_trainer/run_schedule_4b.sh
+```
+
+For temporal schedule around forking tokens, run the training script.
+```bash
+bash examples/grpo_trainer/run_schedule_forking_4b.sh
+```
+
+For temporal schedule entropy-shaped advantages, run the training script.
+```bash
+bash examples/grpo_trainer/run_schedule_adv_4b.sh
 ```
 
 ### Temporal-Schedule arguments
