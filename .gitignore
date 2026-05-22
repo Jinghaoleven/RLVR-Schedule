@@ -14,8 +14,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-dataset/train*
-dataset/train-collect*
+dataset/*
 result/*
 tensorflow/my_graph/*
 .idea/
@@ -128,8 +127,7 @@ ENV/
 
 
 # local logs
-logs
-log
 outputs
 .history
-tensorboard_log/
+tensorboard_log/*
+training_logs/*

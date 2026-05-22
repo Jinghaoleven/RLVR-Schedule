@@ -54,7 +54,7 @@ Default to trajectory percentile temporal schedule, run the training scipt.
 bash examples/grpo_trainer/run_schedule_4b.sh
 ```
 
-## RLVR-Schedule arguments
+## Temporal-Schedule arguments
 
 | Argument | Description |
 |---|---|
