@@ -19,8 +19,8 @@ We introduce the temporal schedule of RLVR and show that *when* learning signals
 🛠️ **Trajectory Percentile Schedule.** We identify that simple trajectory percentiles (TP-Schedule) provides a natural perspective in distinguishing heterogeneous policy behaviors, and effectively anchoring the policy entropy in optimizaiton, suggesting a promising credit allocation criteria for evolving temporal scheduling.
 <div align="center"> <img src="assets/stat.png" width = 85% /> </div>
 
-<!-- 📈 **Temporal Scheduling Analysis.** Temporal scheduling of RLVR has been validated across credit allocation strategies, RLVR algoorithms, and model sizes. 
-<div align="center"> <img src="assets/results.png" width = 85% /> </div> -->
+📈 **Temporal Scheduling Analysis.** Temporal scheduling consistently preserves higher policy entropy across full response under different credit allocation strategies, and induces a structured shift in KL divergence from later to earlier trajectory percentiles over training when adopting the TP-schedule, suggesting the non-uniformly optimized policy behaviors.
+<div align="center"> <img src="assets/expcurve9.png" width = 85% /> </div>
 
 ## 🔧 Environment Set Up
 1. Clone this repository and navigate to the folder:
