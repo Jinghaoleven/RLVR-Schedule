@@ -1,7 +1,7 @@
 <div align="center">
 <h1 align="center"> Not Only Where, But When: Temporal Scheduling for RLVR</h1>
 
-<a href='https://arxiv.org/pdf/2510.10201'><img src='https://img.shields.io/badge/arXiv-RLFR-purple'></a>
+<a href='https://arxiv.org/pdf/2510.10201'><img src='https://img.shields.io/badge/arXiv-RLVR Schedule-purple'></a>
 <a href='https://jinghaoleven.github.io/RLFR/'><img src='https://img.shields.io/badge/Project-Website-orange'></a>
 <a href='https://huggingface.co/datasets/JingHaoZ/OpenReasoning'><img src='https://img.shields.io/badge/Dataset-Train-Green'></a>
 
