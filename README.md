@@ -87,7 +87,7 @@ bash scripts/model_merge.sh
 We acknowledge the outstanding open-source contributions from [Verl](https://github.com/verl-project/verl) for building our codebase.
 Thanks to all the contributors!
 
-## ⭐ Citation
+<!-- ## ⭐ Citation
 Please leave us a star ⭐ if you find this work helpful, and consider cite our paper!
 ```
 @article{zhang2026notonlywhen,
@@ -95,5 +95,5 @@ Please leave us a star ⭐ if you find this work helpful, and consider cite our 
   author={Zhang, Jinghao and Li, Ruilin and Zhao, Feng and Wang, Jiaqi},
   journal={arXiv preprint arXiv:},
   year={2026}
-}
+} -->
 ```
