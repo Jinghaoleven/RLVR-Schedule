@@ -87,13 +87,12 @@ bash scripts/model_merge.sh
 We acknowledge the outstanding open-source contributions from [Verl](https://github.com/verl-project/verl) for building our codebase.
 Thanks to all the contributors!
 
-<!-- ## ⭐ Citation
+## ⭐ Citation
 Please leave us a star ⭐ if you find this work helpful, and consider cite our paper!
 ```
-@article{zhang2026notonlywhen,
-  title={Not Only Where, But When: Temporal Scheduling for RLVR},
+@article{zhang2026not,
+  title={Not only where, But when: Temporal Scheduling for RLVR},
   author={Zhang, Jinghao and Li, Ruilin and Zhao, Feng and Wang, Jiaqi},
-  journal={arXiv preprint arXiv:},
+  journal={arXiv preprint arXiv:2605.25381},
   year={2026}
-} -->
-```
+}
