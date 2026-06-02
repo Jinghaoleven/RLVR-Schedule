@@ -8,7 +8,7 @@
 </div>
 
 ## 🔥 News
-- [2026.05.23] 🔥🔥 We release the [paper](https://arxiv.org/pdf/2510.10201), [code](https://github.com/Jinghaoleven/RLVR-Schedule) and [dataset](https://huggingface.co/datasets/JingHaoZ/OpenReasoning) of RLVR-Schedule.
+- [2026.05.27] 🔥🔥 We release the [paper](https://arxiv.org/pdf/2510.10201), [code](https://github.com/Jinghaoleven/RLVR-Schedule) and [dataset](https://huggingface.co/datasets/JingHaoZ/OpenReasoning) of RLVR-Schedule.
 
 ## 📜 Brief Introduction
 We introduce the temporal schedule of RLVR and show that *when* learning signals are scheduled can be as important as *where* they are allocated across trajectory tokens, and thus extending existing credit allocation approaches with temporal dimension over the course of RLVR optimization. 
