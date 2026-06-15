@@ -1,14 +1,14 @@
 <div align="center">
 <h1 align="center"> Not only where, But when: Temporal Scheduling for RLVR</h1>
 
-<a href='https://arxiv.org/pdf/2510.10201'><img src='https://img.shields.io/badge/arXiv-RLVR Schedule-purple'></a>
+<a href='https://arxiv.org/pdf/2605.25381'><img src='https://img.shields.io/badge/arXiv-RLVR Schedule-purple'></a>
 <a href='https://huggingface.co/datasets/JingHaoZ/OpenReasoning'><img src='https://img.shields.io/badge/Dataset-OpenReasoning-Green'></a>
 <!-- <a href='https://github.com/Jinghaoleven/RLVR-Schedule/'><img src='https://img.shields.io/badge/Project-Website-orange'></a> -->
 
 </div>
 
 ## 🔥 News
-- [2026.05.27] 🔥🔥 We release the [paper](https://arxiv.org/pdf/2510.10201), [code](https://github.com/Jinghaoleven/RLVR-Schedule) and [dataset](https://huggingface.co/datasets/JingHaoZ/OpenReasoning) of RLVR-Schedule.
+- [2026.05.27] 🔥🔥 We release the [paper](https://arxiv.org/pdf/2605.25381), [code](https://github.com/Jinghaoleven/RLVR-Schedule) and [dataset](https://huggingface.co/datasets/JingHaoZ/OpenReasoning) of RLVR-Schedule.
 
 ## 📜 Brief Introduction
 We introduce the temporal schedule of RLVR and show that *when* learning signals are scheduled can be as important as *where* they are allocated across trajectory tokens, and thus extending existing credit allocation approaches with temporal dimension over the course of RLVR optimization. 
