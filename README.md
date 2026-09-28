@@ -8,7 +8,7 @@
 </div>
 
 ## 🔥 News
-- [2026.09.25] 🎉🎉 RLVR-Schedule has been accepted by NeurIPS 2026!!
+- [2026.09.25] 🎉🎉 RLVR-Schedule has been accepted to NeurIPS 2026!
 - [2026.05.27] 🔥🔥 We release the [paper](https://arxiv.org/pdf/2605.25381), [code](https://github.com/Jinghaoleven/RLVR-Schedule) and [dataset](https://huggingface.co/datasets/JingHaoZ/OpenReasoning) of RLVR-Schedule.
 
 ## 📜 Brief Introduction
